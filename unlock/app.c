@@ -120,7 +120,7 @@ static BOOLEAN DisplayCheck(VOID) {
     GuLog("GOP console forwarded AMD match=%u\n",match);valid=valid && (match || GU_DISPLAY_LOG_ONLY);
   }
   GuFree(handles);GuLog("GOP result: valid=%u amd_physical=%zu\n",valid,(size_t)intel);
-  return valid && intel==1 && GuLogReady();
+  return valid && intel>=(GU_DISPLAY_LOG_ONLY?2:1) && (intel==1 || GU_DISPLAY_LOG_ONLY) && GuLogReady();
 }
 static EFI_STATUS ReadConfig(UINT32 *Config) {
   for(UINTN i=0;i<64;i++)if(EFI_ERROR(GuConfigRead(EfiPciIoWidthUint32,(UINT32)i*4,&Config[i]))) {
