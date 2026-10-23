@@ -4,6 +4,7 @@ param(
  [string]$LldLink='lld-link',
  [string]$Python='python',
  [switch]$ExperimentalUnlock,
+ [switch]$MachineLocal,
  [ValidateSet('original03100062','observed03000062','entryLatchedSs1Preserve','entryLatchedSs1Full')][string]$StockProfile
 )
 $ErrorActionPreference='Stop'
@@ -12,9 +13,10 @@ try {
  if(!(Test-Path -LiteralPath $PSScriptRoot)){throw 'Missing output parent'}
  if($ExperimentalUnlock -and !$PSBoundParameters.ContainsKey('StockProfile')){throw '-StockProfile is required with -ExperimentalUnlock'}
  if(!$ExperimentalUnlock -and $PSBoundParameters.ContainsKey('StockProfile')){throw '-StockProfile is only valid with -ExperimentalUnlock'}
- $out=if($ExperimentalUnlock){"build/experimental/$StockProfile"}else{'build'}
- $name=if($ExperimentalUnlock){"RTX3090-EXPERIMENTAL-$StockProfile"}else{'RTX3090-PREFLIGHT'}
+ $out=if($ExperimentalUnlock){"build/experimental/$StockProfile"}elseif($MachineLocal){'build/local'}else{'build'}
+ $name=if($ExperimentalUnlock){"RTX3090-EXPERIMENTAL-$StockProfile"}elseif($MachineLocal){'RTX3090-PREFLIGHT-LOCAL'}else{'RTX3090-PREFLIGHT'}
  $defines=@()
+ if($MachineLocal){$defines+= '-DGU_MACHINE_LOCAL'}
   if($ExperimentalUnlock){$defines+= '-DGU_EXPERIMENTAL_3090';$defines+=$(switch($StockProfile){'original03100062'{'-DGU_STOCK_PROFILE_ORIGINAL_03100062'} 'observed03000062'{'-DGU_STOCK_PROFILE_OBSERVED_03000062'} 'entryLatchedSs1Preserve'{'-DGU_ENTRY_LATCHED_SS1_PRESERVE'} 'entryLatchedSs1Full'{'-DGU_ENTRY_LATCHED_SS1_FULL'}})}
  New-Item -ItemType Directory -Path $out -Force | Out-Null
  $sources=@('app','app_io','ownership','format','runtime','sha256','checks','port','compat',
@@ -29,7 +31,7 @@ try {
  if($LASTEXITCODE -ne 0){throw 'EFI link failed'}
  & $Python verify_pe.py "$out/$name.EFI" "$out/$name.map" --output "$out/pe-verification.json"
  if($LASTEXITCODE -ne 0){throw 'PE verification failed'}
- [ordered]@{BuiltUtc=[DateTime]::UtcNow.ToString('o');TargetPci='220410de';Subsystem='145410de';
+ [ordered]@{BuiltUtc=[DateTime]::UtcNow.ToString('o');TargetPci='220410de';Subsystem=$(if($MachineLocal){'14541b4c (machine_local)'}else{'145410de'});
   Mode=$(if($ExperimentalUnlock){'experimental-exact-card-manual-unlock'}else{'diagnostic-preflight-only'});
   CanArm=[bool]$ExperimentalUnlock;Defines=$defines;ManualConfirmation='U once; Esc or 30-second timeout cancels';
   StockProfile=$(if($ExperimentalUnlock){$StockProfile}else{$null});ColdChipExpected='0xb72000a1';ColdSS0Expected=$(if($StockProfile -like 'entryLatchedSs1*'){'first fully validated cold entry; immutable'}elseif($ExperimentalUnlock){if($StockProfile -eq 'original03100062'){'0x03100062'}else{'0x03000062'}}else{'unknown'});ColdSS1Expected=$(if($StockProfile -like 'entryLatchedSs1*'){'first fully validated cold entry <= 0xf; immutable'}else{'0x6'});

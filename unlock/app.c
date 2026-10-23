@@ -104,7 +104,7 @@ static BOOLEAN DisplayCheck(VOID) {
     }
     if(!mode->Info || mode->SizeOfInfo<sizeof(*mode->Info)){valid=FALSE;break;}
     GopInfoLog(i,mode->Info);
-     if(EFI_ERROR(status) || !path || route!=1 || !AmdGopParent(path) || !mode->FrameBufferBase ||
+     if(EFI_ERROR(status) || !path || (!GU_DISPLAY_LOG_ONLY && (route!=1 || !AmdGopParent(path))) || !mode->FrameBufferBase ||
        !mode->FrameBufferSize || mode->Info->PixelFormat>PixelBlueGreenRedReserved8BitPerColor ||
        !mode->Info->HorizontalResolution || !mode->Info->VerticalResolution ||
        mode->Info->PixelsPerScanLine<mode->Info->HorizontalResolution ||
@@ -117,7 +117,7 @@ static BOOLEAN DisplayCheck(VOID) {
     BOOLEAN match=intel==1 && forwarded.Version==physical.Version && forwarded.PixelFormat==physical.PixelFormat &&
       forwarded.HorizontalResolution==physical.HorizontalResolution && forwarded.VerticalResolution==physical.VerticalResolution &&
       forwarded.PixelsPerScanLine==physical.PixelsPerScanLine;
-    GuLog("GOP console forwarded AMD match=%u\n",match);valid=valid && match;
+    GuLog("GOP console forwarded AMD match=%u\n",match);valid=valid && (match || GU_DISPLAY_LOG_ONLY);
   }
   GuFree(handles);GuLog("GOP result: valid=%u amd_physical=%zu\n",valid,(size_t)intel);
   return valid && intel==1 && GuLogReady();
@@ -136,8 +136,9 @@ static EFI_STATUS ConfigCheck(BOOLEAN Save) {
   if(EFI_ERROR(status))return status;
   status=ReadConfig(config);if(EFI_ERROR(status))return status;
   BOOLEAN checked=GuCheckConfig(config,segment,bus,device,function,&caps);
-  BOOLEAN valid=checked && config[2]==0x030000a1 && config[0xc8/4]==0x00050011 &&
-    config[0x10/4]==GU_BAR0_BASE && !(config[(caps.pcie+8)/4]&0x00200000U);
+  BOOLEAN valid=checked && config[2]==0x030000a1 &&
+    (GU_CONFIG_LOG_ONLY_PINS || (config[0xc8/4]==0x00050011 &&
+    config[0x10/4]==GU_BAR0_BASE && !(config[(caps.pcie+8)/4]&0x00200000U)));
   BOOLEAN same=Save || !memcmp(config,InitialConfig,sizeof(config));
   if(Save || !valid || !same)ConfigLog(config);
   GuLog("target BDF=%zu:%zu:%zu.%zu checks=%u pm=%#x pcie=%#x msi=%#x msix=%#x\n",
@@ -207,7 +208,15 @@ static EFI_STATUS FindTarget(VOID) {
     status=Gu.bs->HandleProtocol(handles[i],&PciGuid,(VOID **)&pci);
     if(!EFI_ERROR(status) && pci)status=pci->Pci.Read(pci,EfiPciIoWidthUint32,0,1,&id);
     if(EFI_ERROR(status) || !pci){GuLog("PCI scan failed: index=%zu status=%#llx\n",(size_t)i,(unsigned long long)status);status=EFI_DEVICE_ERROR;break;}
-    if(id==GU_BOARD_ID){found++;Gu.handle=handles[i];Gu.pci=pci;}
+    if(id==GU_BOARD_ID) {
+#ifdef GU_MACHINE_LOCAL
+      /* Four GA102 cards present; select the pinned BDF only. */
+      UINTN s,b,d,f;
+      if(EFI_ERROR(pci->GetLocation(pci,&s,&b,&d,&f)))continue;
+      if(s!=GU_TARGET_SEGMENT || b!=GU_TARGET_BUS || d!=GU_TARGET_DEVICE || f!=GU_TARGET_FUNCTION)continue;
+#endif
+      found++;Gu.handle=handles[i];Gu.pci=pci;
+    }
   }
   GuFree(handles);GuLog("PCI target matches=%zu status=%#llx\n",(size_t)found,(unsigned long long)status);
   if(EFI_ERROR(status) || found!=1)return EFI_UNSUPPORTED;
@@ -223,10 +232,10 @@ static EFI_STATUS BarCheck(VOID) {
         (unsigned)r->ResType,(unsigned long long)r->AddrSpaceGranularity,(unsigned long long)r->AddrRangeMin,
         (unsigned long long)r->AddrRangeMax,(unsigned long long)r->AddrLen,(unsigned long long)r->AddrTranslationOffset);
     if(!r || r->Desc!=ACPI_ADDRESS_SPACE_DESCRIPTOR || r->Len!=sizeof(*r)-3 || r->ResType!=0 ||
-      r->AddrRangeMin!=GU_BAR0_BASE || r->AddrLen!=0x1000000 || r->AddrTranslationOffset ||
+      (GU_BAR0_BASE && r->AddrRangeMin!=GU_BAR0_BASE) || r->AddrLen!=0x1000000 || r->AddrTranslationOffset ||
       /* UEFI describes an inclusive end; pinned EDK2 PciBusDxe instead returns
          PciBar.Alignment. Both representations describe this exact 16 MiB BAR. */
-      (r->AddrRangeMax!=0xf5ffffff && r->AddrRangeMax!=0x00ffffff) ||
+      (GU_BAR0_BASE && r->AddrRangeMax!=0xf5ffffff && r->AddrRangeMax!=0x00ffffff) ||
       r->AddrSpaceGranularity!=32 || ((UINT8 *)(r+1))[0]!=ACPI_END_TAG_DESCRIPTOR)status=EFI_UNSUPPORTED;
     else {
       UINT8 *raw=(UINT8 *)r,sum=0;
@@ -305,8 +314,22 @@ static EFI_STATUS PromCheck(VOID) {
   Gu.profile_verified=FALSE;
   VOID *prom=GuAlloc(1048576);if(!prom)return EFI_OUT_OF_RESOURCES;
   GuCopyFromIo(prom,(VOID *)(UINTN)(Gu.bar_base+0x300000),1048576);
+#ifdef GU_MACHINE_LOCAL
+  if(!GU_PROM_SHA256_LOCAL[0]) {
+    /* Log-only: collect the live PROM hash; do not gate on the author's card. */
+    if(Gu.fault){GuFree(prom);return EFI_DEVICE_ERROR;}
+    { UINT8 d[32];char hex[65];static const char hx[]="0123456789abcdef";
+      GuSha256(prom,1048576,d);
+      for(UINTN i=0;i<32;i++){hex[i*2]=hx[d[i]>>4];hex[i*2+1]=hx[d[i]&15U];}hex[64]=0;
+      GuLog("PROM sha256 (log-only, unverified): %s\n",hex);
+      GuFree(prom);return EFI_SUCCESS; }
+  }
+  { BOOLEAN good=!Gu.fault && GuHashMatches(prom,1048576,GU_PROM_SHA256_LOCAL);
+    GuFree(prom);Gu.prom_verified=good;GuLog("live PROM hash matched=%u\n",(unsigned)good);return good?EFI_SUCCESS:EFI_CRC_ERROR; }
+#else
   BOOLEAN good=!Gu.fault && GuHashMatches(prom,1048576,"8ea297373e9e5d3600ff41ad9fae88f2d14c98c017d100669f7333981da673b4");
   GuFree(prom);Gu.prom_verified=good;GuLog("live PROM hash matched=%u\n",(unsigned)good);return good?EFI_SUCCESS:EFI_CRC_ERROR;
+#endif
 }
 static EFI_STATUS Arm(VOID) {
 #if !defined(GU_EXPERIMENTAL_3090)

@@ -4,11 +4,36 @@
 #include <Protocol/DevicePath.h>
 #include <stddef.h>
 
+#ifdef GU_MACHINE_LOCAL
+#include "machine_local.h"
+#endif
 #define GU_BOARD_ID 0x220410deU
+#ifndef GU_BOARD_SUBSYSTEM
 #define GU_BOARD_SUBSYSTEM 0x145410deU
+#endif
 #define GU_AMD_ID 0x164e1002U
 #define GU_AMD_SUBSYSTEM 0x88771043U
+#ifndef GU_BAR0_BASE
 #define GU_BAR0_BASE 0xf5000000ULL
+#endif
+#ifndef GU_TARGET_SEGMENT
+#define GU_TARGET_SEGMENT 0U
+#endif
+#ifndef GU_TARGET_BUS
+#define GU_TARGET_BUS 1U
+#endif
+#ifndef GU_TARGET_DEVICE
+#define GU_TARGET_DEVICE 0U
+#endif
+#ifndef GU_TARGET_FUNCTION
+#define GU_TARGET_FUNCTION 0U
+#endif
+#ifndef GU_CONFIG_LOG_ONLY_PINS
+#define GU_CONFIG_LOG_ONLY_PINS 0
+#endif
+#ifndef GU_DISPLAY_LOG_ONLY
+#define GU_DISPLAY_LOG_ONLY 0
+#endif
 #define GU_DEVICE_MEMORY_SIZE 0x6000U
 /* The default artifact is read-only. Legacy host containment tests are never
    a production enable switch; experimental firmware requires its own define. */
