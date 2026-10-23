@@ -19,6 +19,14 @@ try {
  if($MachineLocal){$defines+= '-DGU_MACHINE_LOCAL'}
   if($ExperimentalUnlock){$defines+= '-DGU_EXPERIMENTAL_3090';$defines+=$(switch($StockProfile){'original03100062'{'-DGU_STOCK_PROFILE_ORIGINAL_03100062'} 'observed03000062'{'-DGU_STOCK_PROFILE_OBSERVED_03000062'} 'entryLatchedSs1Preserve'{'-DGU_ENTRY_LATCHED_SS1_PRESERVE'} 'entryLatchedSs1Full'{'-DGU_ENTRY_LATCHED_SS1_FULL'}})}
  New-Item -ItemType Directory -Path $out -Force | Out-Null
+ # PromSha256 records the runtime PROM pin baked into THIS build (consumed by
+ # PromCheck via GU_PROM_SHA256_LOCAL). Single source of truth for machine-local
+ # builds is machine_local.h; parse it so the manifest cannot drift from the binary.
+ $promPin='8ea297373e9e5d3600ff41ad9fae88f2d14c98c017d100669f7333981da673b4'
+ if($MachineLocal){
+  $m=Select-String -LiteralPath 'machine_local.h' -Pattern '#define\s+GU_PROM_SHA256_LOCAL\s+"([0-9a-f]{64})"'
+  $promPin=if($m){$m.Matches[0].Groups[1].Value}else{'log-only (unpinned in machine_local.h)'}
+ }
  $sources=@('app','app_io','ownership','format','runtime','sha256','checks','port','compat',
   'vendor/unlock_610','vendor/prep_610','vendor/layout_610','vendor/vbios_610','vendor/gfw_eval')
  $objects=@()
@@ -38,7 +46,7 @@ try {
   SS0Target='0x88888888';SS1Target=$(if($StockProfile -eq 'entryLatchedSs1Preserve'){'preserve entry; no SS1 writes'}elseif($StockProfile -eq 'entryLatchedSs1Full'){'0x8; one guarded write'}elseif($ExperimentalUnlock){'0x8'}else{'no writes'});
   OriginalBaselineCapture='G:/RTX3090-PREFLIGHT/RUN00/REPORT.TXT';
   StockProfileSource=$(if($StockProfile -like 'entryLatchedSs1*'){'Explicit immutable validated entry latch; no fixed stock selector assumption'}elseif($StockProfile -eq 'observed03000062'){'Explicit observed03000062 experiment selection; original baseline capture does not evidence this SS0'}elseif($ExperimentalUnlock){'OriginalBaselineCapture'}else{'preflight has no selected stock profile'});
-  PromSha256='8ea297373e9e5d3600ff41ad9fae88f2d14c98c017d100669f7333981da673b4';
+  PromSha256=$promPin;
   DeviceMemorySize='0x6000';HardwareTested=$false;
   EfiSha256=(Get-FileHash -LiteralPath "$out/$name.EFI" -Algorithm SHA256).Hash;
   Headers=@(Get-ChildItem -LiteralPath . -Recurse -File -Filter '*.h' | Where-Object {$_.FullName -notlike '*\build\*'} | Sort-Object FullName | ForEach-Object {[ordered]@{Path=$_.FullName.Substring($PSScriptRoot.Length+1);Sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash}});
