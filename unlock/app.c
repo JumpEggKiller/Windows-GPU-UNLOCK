@@ -566,14 +566,21 @@ static void CardReset(EFI_HANDLE Image, UINTN Index) {
 }
 
 /* Read-only gates, in the same order the single-card build uses. */
+/* Phase A is read-only data collection, so every card must yield its PROM digest and cold state even
+   when a later gate refuses it. The display gate is checked LAST for exactly that reason: it is the
+   gate that excludes the display-owning card, and if it ran first that card would be reported without
+   the very measurements the pin file needs. Eligibility still requires every stage to succeed, so the
+   reordering cannot make an unsafe card eligible - it only stops the report from hiding its data. */
 static EFI_STATUS CardProbe(UINTN Index) {
-  EFI_STATUS s;
-  Stage = "target";   s = Step(FindTarget());             if (EFI_ERROR(s)) return s;
-  Stage = "display";  Gu.display_ok = DisplayCheck();
-  s = Step(Gu.display_ok ? EFI_SUCCESS : EFI_UNSUPPORTED); if (EFI_ERROR(s)) return s;
-  Stage = "bar0";     s = Step(BarCheck());               if (EFI_ERROR(s)) return s;
-  Stage = "prom";     s = Step(PromCheck());              if (EFI_ERROR(s)) return s;
-  Stage = "cold-state"; return Step(ColdCheck());
+  EFI_STATUS s, first = EFI_SUCCESS;
+  Stage = "target";     s = Step(FindTarget());   if (EFI_ERROR(s)) return s; /* no handle, no reads */
+  Stage = "bar0";       s = Step(BarCheck());     if (EFI_ERROR(s) && !EFI_ERROR(first)) first = s;
+  Stage = "prom";       s = Step(PromCheck());    if (EFI_ERROR(s) && !EFI_ERROR(first)) first = s;
+  Stage = "cold-state"; s = Step(ColdCheck());    if (EFI_ERROR(s) && !EFI_ERROR(first)) first = s;
+  Stage = "display";    Gu.display_ok = DisplayCheck();
+  s = Step(Gu.display_ok ? EFI_SUCCESS : EFI_UNSUPPORTED);
+  if (EFI_ERROR(s) && !EFI_ERROR(first)) first = s;
+  return first;
 }
 
 /* One manual confirmation for the whole batch, after every card was probed. */
