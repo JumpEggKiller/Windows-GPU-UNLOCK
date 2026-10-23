@@ -36,8 +36,8 @@ int main(void) {
   Check(GU_TARGET_BUS == 0xC1U, "target bus is C1");
   Check(GU_BOARD_SUBSYSTEM == 0x14541B4CU, "target subsystem is ZOTAC 14541B4C");
   Check(GU_BAR0_BASE == 0ULL, "BAR0 base is log-only (0)");
-  Check(GU_PROM_SHA256_LOCAL[0] == '\0', "PROM hash is log-only (empty)");
-  Check(GU_CONFIG_LOG_ONLY_PINS == 1, "config c8/pcie pins are log-only");
+  Check(GU_PROM_SHA256_LOCAL[0] != '\0', "PROM hash pinned (verified 3/3 cold boots)");
+  Check(GU_CONFIG_LOG_ONLY_PINS == 0, "config c8/pcie pins restored hard (verified on rig)");
   Check(GU_DISPLAY_LOG_ONLY == 1, "display route is log-only");
   Basic(C); Check(GuCheckConfig(C, 0, 0xC1, 0, 0, &Caps), "GPU3 BDF+subsystem accepted");
   Basic(C); Check(!GuCheckConfig(C, 0, 0x01, 0, 0, &Caps), "GPU0 bus rejected (same subsystem, different bus)");

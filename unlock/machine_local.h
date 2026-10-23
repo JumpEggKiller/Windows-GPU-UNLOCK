@@ -20,13 +20,16 @@
    the PROM window at BAR0+0x300000, which requires it). */
 #define GU_BAR0_BASE 0ULL
 
-/* Empty = log-only: compute and log the live PROM SHA-256; do not gate.
-   Fill with the 64-hex string once collected from a preflight run. */
-#define GU_PROM_SHA256_LOCAL ""
+/* PROM SHA-256 of THIS card (1 MiB at BAR0+0x300000), computed by the
+   log-only preflight and stable across three cold boots (RUN01/RUN02/RUN03,
+   2026-10-23). Restored as a hard gate. SS0/SS1 stay unpinned: the
+   entry-latch profiles latch observed values (SS0 field7 drifted 2->6
+   across boots and is overwritten by the unlock write anyway). */
+#define GU_PROM_SHA256_LOCAL "e23caae3312afa69407c7cc79538875d5cf36e78065ce4c0d615a61bffa7e5bb"
 
-/* 1 = the config[0xc8] vendor dword and the PCIe-capability dword bit test
-   are logged, not gated (author-pinned values unknown for this card). */
-#define GU_CONFIG_LOG_ONLY_PINS 1
+/* 0 = hard: config[0xc8] and the PCIe-capability bit test verified on this
+   card via the preflight config dump (0x00050011; FLR bit set) — restored. */
+#define GU_CONFIG_LOG_ONLY_PINS 0
 
 /* 1 = display check logs every GOP path/parent and accepts the physical
    ASPEED BMC GOP (1a03:2000 behind an AST1150 bridge under root complex 3);

@@ -88,6 +88,25 @@ static BOOLEAN DisplayCheck(VOID) {
     GuLog("GOP[%u] path_status=%#llx route=%d framebuffer=%#llx bytes=%zu mode=%u max_mode=%u info_bytes=%zu console=%u\n",
       (unsigned)i,(unsigned long long)status,route,(unsigned long long)mode->FrameBufferBase,
       (size_t)mode->FrameBufferSize,mode->Mode,mode->MaxMode,(size_t)mode->SizeOfInfo,(unsigned)(handles[i]==Table->ConsoleOutHandle));
+#ifdef GU_MACHINE_LOCAL
+    /* Machine assertion: no physical GOP may sit on the target BDF; the
+       console must never live on the card being unlocked (RUN01-03: the
+       target has no GOP; the two observed paths are the display GPU and
+       the ASPEED BMC). */
+    if(!EFI_ERROR(status) && path) {
+      EFI_DEVICE_PATH_PROTOCOL *rem=path;EFI_HANDLE par=NULL;
+      if(!EFI_ERROR(Gu.bs->LocateDevicePath(&PciGuid,&rem,&par)) && par) {
+        EFI_PCI_IO_PROTOCOL *p=NULL;
+        if(!EFI_ERROR(Gu.bs->HandleProtocol(par,&PciGuid,(VOID**)&p)) && p && p->GetLocation) {
+          UINTN s2,b2,d2,f2;
+          if(!EFI_ERROR(p->GetLocation(p,&s2,&b2,&d2,&f2)) && s2==GU_TARGET_SEGMENT && b2==GU_TARGET_BUS &&
+             d2==GU_TARGET_DEVICE && f2==GU_TARGET_FUNCTION) {
+            GuLog("GOP[%u] sits on target BDF - refuse\n",(unsigned)i);valid=FALSE;break;
+          }
+        }
+      }
+    }
+#endif
     if((status==EFI_UNSUPPORTED || status==EFI_NOT_FOUND) && !path && !mode->FrameBufferBase &&
        !mode->FrameBufferSize) {
       EFI_GRAPHICS_OUTPUT_MODE_INFORMATION info;
@@ -137,8 +156,9 @@ static EFI_STATUS ConfigCheck(BOOLEAN Save) {
   status=ReadConfig(config);if(EFI_ERROR(status))return status;
   BOOLEAN checked=GuCheckConfig(config,segment,bus,device,function,&caps);
   BOOLEAN valid=checked && config[2]==0x030000a1 &&
-    (GU_CONFIG_LOG_ONLY_PINS || (config[0xc8/4]==0x00050011 &&
-    config[0x10/4]==GU_BAR0_BASE && !(config[(caps.pcie+8)/4]&0x00200000U)));
+    config[0xc8/4]==0x00050011 &&
+    (!GU_BAR0_BASE || config[0x10/4]==GU_BAR0_BASE) &&
+    !(config[(caps.pcie+8)/4]&0x00200000U);
   BOOLEAN same=Save || !memcmp(config,InitialConfig,sizeof(config));
   if(Save || !valid || !same)ConfigLog(config);
   GuLog("target BDF=%zu:%zu:%zu.%zu checks=%u pm=%#x pcie=%#x msi=%#x msix=%#x\n",
