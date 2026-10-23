@@ -39,10 +39,16 @@
      GPU0 0000:01:00.0 sub 14541B4C (ZOTAC) vbios 94.02.26.c0.35 display_active=Enabled
      GPU1 0000:41:00.0 sub 38821462 (MSI)   vbios 94.02.26.88.07 display_active=Disabled
      GPU2 0000:81:00.0 sub 38821462 (MSI)   vbios 94.02.26.88.07 display_active=Disabled
-     GPU3 0000:C1:00.0 sub 14541B4C (ZOTAC) vbios 94.02.59.00.4e display_active=Disabled */
+     GPU3 0000:C1:00.0 sub 14541B4C (ZOTAC) vbios 94.02.59.00.4e display_active=Disabled
+
+   config[0xc8] measured by the read-only probe on all four cards (RUN05): 0x00050011
+   on every one. It is a shared platform value here, not a per-card discriminator, so it
+   stays pinned per card anyway - a card that changes it must fail its own gate.
+   BAR0 is firmware-assigned per card and is NOT pinned: 0x92000000 / 0xf2000000 /
+   0x9b000000 / 0xf8000000 for GPU1 / GPU2 / GPU3 / GPU0 in that same run. */
 #define GU_CARD_TABLE(GU_CARD)                                                                     \
-  GU_CARD("GPU1", 0, 0x41, 0, 0, 0x38821462U, 0x00000000U, "", TRUE)                               \
-  GU_CARD("GPU2", 0, 0x81, 0, 0, 0x38821462U, 0x00000000U, "", TRUE)                               \
+  GU_CARD("GPU1", 0, 0x41, 0, 0, 0x38821462U, 0x00050011U, "", TRUE)                               \
+  GU_CARD("GPU2", 0, 0x81, 0, 0, 0x38821462U, 0x00050011U, "", TRUE)                               \
   GU_CARD("GPU3", 0, 0xC1, 0, 0, 0x14541B4CU, 0x00050011U,                                        \
           "e23caae3312afa69407c7cc79538875d5cf36e78065ce4c0d615a61bffa7e5bb", TRUE)                \
-  GU_CARD("GPU0", 0, 0x01, 0, 0, 0x14541B4CU, 0x00000000U, "", TRUE)
+  GU_CARD("GPU0", 0, 0x01, 0, 0, 0x14541B4CU, 0x00050011U, "", TRUE)

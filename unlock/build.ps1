@@ -43,9 +43,14 @@ try {
   $joined=(Get-Content -Raw -LiteralPath 'targets_local.h') -replace '\\\r?\n',' '
   $pattern='GU_CARD\(\s*"([^"]*)"\s*,\s*(\d+)\s*,\s*(0x[0-9A-Fa-f]+)U?\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(0x[0-9A-Fa-f]+)U?\s*,\s*(0x[0-9A-Fa-f]+)U?\s*,\s*"([0-9a-f]*)"\s*,\s*(TRUE|FALSE)\s*\)'
   foreach($m in [regex]::Matches($joined,$pattern)){
+   # Normalise the hex fields so the manifest reads the way the source does. Keeping the raw
+   # '0x41' text next to integer Device/Function made every consumer print '0x0x41'.
+   $busHex='0x{0:X2}' -f [Convert]::ToInt32($m.Groups[3].Value.Substring(2),16)
+   $subHex='0x{0:X8}' -f [Convert]::ToInt32($m.Groups[6].Value.Substring(2),16)
+   $c8Hex ='0x{0:X8}' -f [Convert]::ToInt32($m.Groups[7].Value.Substring(2),16)
    $targetRows+=[ordered]@{Name=$m.Groups[1].Value;Segment=[int]$m.Groups[2].Value;
-    Bus=$m.Groups[3].Value;Device=[int]$m.Groups[4].Value;Function=[int]$m.Groups[5].Value;
-    Subsystem=$m.Groups[6].Value;ConfigC8=$m.Groups[7].Value;
+    Bus=$busHex;Device=[int]$m.Groups[4].Value;Function=[int]$m.Groups[5].Value;
+    Subsystem=$subHex;ConfigC8=$c8Hex;
     PromSha256=$(if($m.Groups[8].Value){$m.Groups[8].Value}else{'<unpinned: probe only>'});
     UnlockAllowed=($m.Groups[9].Value -eq 'TRUE')}
   }
