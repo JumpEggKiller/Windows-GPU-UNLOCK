@@ -29,10 +29,15 @@ foreach($profile in @('original03100062','observed03000062','entryLatchedSs1Pres
   RunTest "profile-lock-$profile" @('-DGU_EXPERIMENTAL_3090',$pd) @('tests/test_profile_lock.c','port.c') @()
 }
 RunTest 'machine-local' @('-DGU_MACHINE_LOCAL') @('tests/test_machine_local.c','checks.c') @()
+RunTest 'multi-target' @('-DGU_MULTI_TARGET') @('tests/test_multi_target.c','checks.c','targets.c') @()
+RunTest 'multi-target-arming' @('-DGU_MULTI_TARGET','-DGU_EXPERIMENTAL_3090','-DGU_ENTRY_LATCHED_SS1_FULL') @('tests/test_multi_target.c','checks.c','targets.c') @()
 & python tests/test_pe.py 'build/RTX3090-PREFLIGHT.EFI' 'build/RTX3090-PREFLIGHT.map'
 if($LASTEXITCODE -ne 0){throw 'PE tests failed (default)'}
 Write-Output 'OK pe-default'
 & python tests/test_pe.py 'build/local/RTX3090-PREFLIGHT-LOCAL.EFI' 'build/local/RTX3090-PREFLIGHT-LOCAL.map'
 if($LASTEXITCODE -ne 0){throw 'PE tests failed (machine-local)'}
 Write-Output 'OK pe-machine-local'
+& python tests/test_pe.py 'build/multi/preflight/RTX3090-MULTI-PREFLIGHT.EFI' 'build/multi/preflight/RTX3090-MULTI-PREFLIGHT.map'
+if($LASTEXITCODE -ne 0){throw 'PE tests failed (multi-target)'}
+Write-Output 'OK pe-multi'
 Write-Output 'ALL RUNNABLE GROUPS PASSED'

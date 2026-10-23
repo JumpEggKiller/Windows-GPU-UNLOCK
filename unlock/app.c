@@ -88,7 +88,7 @@ static BOOLEAN DisplayCheck(VOID) {
     GuLog("GOP[%u] path_status=%#llx route=%d framebuffer=%#llx bytes=%zu mode=%u max_mode=%u info_bytes=%zu console=%u\n",
       (unsigned)i,(unsigned long long)status,route,(unsigned long long)mode->FrameBufferBase,
       (size_t)mode->FrameBufferSize,mode->Mode,mode->MaxMode,(size_t)mode->SizeOfInfo,(unsigned)(handles[i]==Table->ConsoleOutHandle));
-#ifdef GU_MACHINE_LOCAL
+#if defined(GU_MACHINE_LOCAL) || defined(GU_MULTI_TARGET)
     /* Machine assertion: no physical GOP may sit on the target BDF; the
        console must never live on the card being unlocked (RUN01-03: the
        target has no GOP; the two observed paths are the display GPU and
@@ -99,9 +99,14 @@ static BOOLEAN DisplayCheck(VOID) {
         EFI_PCI_IO_PROTOCOL *p=NULL;
         if(!EFI_ERROR(Gu.bs->HandleProtocol(par,&PciGuid,(VOID**)&p)) && p && p->GetLocation) {
           UINTN s2,b2,d2,f2;
-          if(!EFI_ERROR(p->GetLocation(p,&s2,&b2,&d2,&f2)) && s2==GU_TARGET_SEGMENT && b2==GU_TARGET_BUS &&
-             d2==GU_TARGET_DEVICE && f2==GU_TARGET_FUNCTION) {
-            GuLog("GOP[%u] sits on target BDF - refuse\n",(unsigned)i);valid=FALSE;break;
+          if(!EFI_ERROR(p->GetLocation(p,&s2,&b2,&d2,&f2))) {
+#ifdef GU_MULTI_TARGET
+            GuLog("GOP[%u] PCI parent BDF=%x:%x:%x.%x\n",(unsigned)i,(unsigned)s2,(unsigned)b2,(unsigned)d2,(unsigned)f2);
+#endif
+            if(s2==GU_TARGET_SEGMENT && b2==GU_TARGET_BUS &&
+               d2==GU_TARGET_DEVICE && f2==GU_TARGET_FUNCTION) {
+              GuLog("GOP[%u] sits on target BDF - refuse\n",(unsigned)i);valid=FALSE;break;
+            }
           }
         }
       }
@@ -156,7 +161,7 @@ static EFI_STATUS ConfigCheck(BOOLEAN Save) {
   status=ReadConfig(config);if(EFI_ERROR(status))return status;
   BOOLEAN checked=GuCheckConfig(config,segment,bus,device,function,&caps);
   BOOLEAN valid=checked && config[2]==0x030000a1 &&
-    config[0xc8/4]==0x00050011 &&
+    GU_CONFIG_C8_OK(config[0xc8/4]) &&
     (!GU_BAR0_BASE || config[0x10/4]==GU_BAR0_BASE) &&
     !(config[(caps.pcie+8)/4]&0x00200000U);
   BOOLEAN same=Save || !memcmp(config,InitialConfig,sizeof(config));
@@ -170,6 +175,7 @@ static EFI_STATUS ConfigCheck(BOOLEAN Save) {
   Gu.pm_cap=caps.pm;Gu.pcie_cap=caps.pcie;Gu.pcie_version=caps.pcie_version;Gu.msi_cap=caps.msi;Gu.msix_cap=caps.msix;
   return EFI_SUCCESS;
 }
+#if !defined(GU_MULTI_TARGET) || defined(GU_EXPERIMENTAL_3090)
 static EFI_STATUS RestoreDecode(VOID) {
   UINT32 current[64],normalized[64],after[64];UINTN segment,bus,device,function;
   if(GU_PREFLIGHT_ONLY || !Gu.profile_verified || !Gu.pci || !Gu.owned || !Gu.armed || !Gu.display_ok || Gu.started || Gu.allocations ||
@@ -218,6 +224,7 @@ static EFI_STATUS RestoreDecode(VOID) {
   if(!GuLogReady() || Gu.fault)return EFI_DEVICE_ERROR;
   return matched?EFI_SUCCESS:EFI_COMPROMISED_DATA;
 }
+#endif /* !GU_MULTI_TARGET || GU_EXPERIMENTAL_3090 (RestoreDecode) */
 static EFI_STATUS FindTarget(VOID) {
   EFI_HANDLE *handles=NULL;UINTN count=0,found=0;
   EFI_STATUS status=Gu.bs->LocateHandleBuffer(ByProtocol,&PciGuid,NULL,&count,&handles);
@@ -334,7 +341,7 @@ static EFI_STATUS PromCheck(VOID) {
   Gu.profile_verified=FALSE;
   VOID *prom=GuAlloc(1048576);if(!prom)return EFI_OUT_OF_RESOURCES;
   GuCopyFromIo(prom,(VOID *)(UINTN)(Gu.bar_base+0x300000),1048576);
-#ifdef GU_MACHINE_LOCAL
+#if defined(GU_MACHINE_LOCAL) || defined(GU_MULTI_TARGET)
   if(!GU_PROM_SHA256_LOCAL[0]) {
     /* Log-only: collect the live PROM hash; do not gate on the author's card. */
     if(Gu.fault){GuFree(prom);return EFI_DEVICE_ERROR;}
@@ -351,6 +358,7 @@ static EFI_STATUS PromCheck(VOID) {
   GuFree(prom);Gu.prom_verified=good;GuLog("live PROM hash matched=%u\n",(unsigned)good);return good?EFI_SUCCESS:EFI_CRC_ERROR;
 #endif
 }
+#if !defined(GU_MULTI_TARGET)
 static EFI_STATUS Arm(VOID) {
 #if !defined(GU_EXPERIMENTAL_3090)
   return EFI_UNSUPPORTED;
@@ -373,6 +381,8 @@ static EFI_STATUS Arm(VOID) {
   return EFI_TIMEOUT;
 #endif
 }
+#endif /* !GU_MULTI_TARGET (Arm) */
+#if !defined(GU_MULTI_TARGET) || defined(GU_EXPERIMENTAL_3090)
 static VOID Halt(VOID) {
   Gu.retained=TRUE;
   GuLogText("STOP: cleanup cannot be proven. Resources remain reserved.\nPOWER OFF using the physical power button; do not continue to Windows.\n");
@@ -385,6 +395,7 @@ static VOID LogContainment(VOID) {
     (unsigned long long)Gu.master_attribute_status,(unsigned long long)Gu.master_hardware_status,
     Gu.master_last_command,(unsigned long long)Gu.master_last_attributes,Gu.master_attributes_pending);
 }
+
 static VOID ReleaseHalt(EFI_STATUS Status,BOOLEAN Attempted) {
   /* A failed claim may follow interface removal/replacement during logging.
      Resolve, validate and clear BME without a callback window or stale access. */
@@ -397,6 +408,8 @@ static VOID ReleaseHalt(EFI_STATUS Status,BOOLEAN Attempted) {
     (unsigned long long)Status,Stage,Attempted,(unsigned long long)contained,(unsigned)(Gu.pci!=NULL));
   Halt();
 }
+#endif /* !GU_MULTI_TARGET || GU_EXPERIMENTAL_3090 (Halt/ReleaseHalt) */
+#ifndef GU_MULTI_TARGET
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE Image,EFI_SYSTEM_TABLE *St) {
   if(!St || !St->BootServices || !St->RuntimeServices)return EFI_INVALID_PARAMETER;
   Table=St;GuInit(St->BootServices,NULL);Gu.image=Image;Gu.display_check=DisplayCheck;
@@ -504,3 +517,347 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE Image,EFI_SYSTEM_TABLE *St) {
   else GuConsole("Attempt cancelled or rejected. Returning without another attempt.\n");
   return status;
 }
+#endif /* !GU_MULTI_TARGET */
+
+#ifdef GU_MULTI_TARGET
+/* ---------------------------------------------------------------------------
+   GPU-UNLOCK-C1 multi-target orchestration.
+
+   Phase A walks every configured card through the READ-ONLY preflight so each
+   one is judged against its own pins. Phase B re-validates that card from a
+   clean Gu state and, only if it still clears every gate, runs its single
+   transaction. Nothing here weakens a gate: an unpinned, disallowed or
+   gate-failing card is simply never armed.
+   --------------------------------------------------------------------------- */
+typedef struct {
+  EFI_STATUS Probe;      /* phase A read-only outcome */
+  BOOLEAN    ProbeRead;  /* the card answered the identity stage at all */
+  BOOLEAN    Pinned;     /* every hardware pin present in the table */
+  BOOLEAN    Eligible;   /* may be armed in phase B */
+  BOOLEAN    Attempted;  /* a transaction was started */
+  BOOLEAN    Released;   /* the firmware driver was disconnected */
+  BOOLEAN    Unlocked;   /* transaction returned 0 with clean containment */
+  BOOLEAN    Retained;   /* unlocked selector state re-read after the batch */
+  BOOLEAN    Clean;      /* GuSafeToReturn held at the end of the card */
+  int        Result;
+  UINT32     Ss0, Ss1;
+  const char *Note;
+} GU_CARD_RECORD;
+static GU_CARD_RECORD Cards[GU_TARGET_MAX];
+
+static void CardBanner(UINTN Index, const char *Phase, const char *Note) {
+  const GU_TARGET *T = &GuTargets[Index];
+  GuLogText("\n");
+  GuLog("===== target[%zu] %s %s =====\n", (size_t)Index, T->Name, Phase);
+  GuLog("target[%zu] identity=%x:%x:%x.%x subsystem=%#x c8_pin=%#x prom_pin=%s allowed=%u note=%s\n",
+    (size_t)Index, (unsigned)T->Segment, (unsigned)T->Bus, (unsigned)T->Device, (unsigned)T->Function,
+    T->Subsystem, T->ConfigC8, (T->PromSha256 && T->PromSha256[0]) ? "set" : "absent",
+    (unsigned)T->UnlockAllowed, Note ? Note : "-");
+}
+
+/* Fresh Gu for one card. Software state only: no hardware access. */
+static void CardReset(EFI_HANDLE Image, UINTN Index) {
+  GuInit(Table->BootServices, NULL);
+  Gu.image = Image;
+  Gu.display_check = DisplayCheck;
+  memset(InitialConfig, 0, sizeof(InitialConfig));
+  memset(&PendingOwner, 0, sizeof(PendingOwner));
+  GuTargetSelect(Index);
+}
+
+/* Read-only gates, in the same order the single-card build uses. */
+static EFI_STATUS CardProbe(UINTN Index) {
+  EFI_STATUS s;
+  Stage = "target";   s = Step(FindTarget());             if (EFI_ERROR(s)) return s;
+  Stage = "display";  Gu.display_ok = DisplayCheck();
+  s = Step(Gu.display_ok ? EFI_SUCCESS : EFI_UNSUPPORTED); if (EFI_ERROR(s)) return s;
+  Stage = "bar0";     s = Step(BarCheck());               if (EFI_ERROR(s)) return s;
+  Stage = "prom";     s = Step(PromCheck());              if (EFI_ERROR(s)) return s;
+  Stage = "cold-state"; return Step(ColdCheck());
+}
+
+/* One manual confirmation for the whole batch, after every card was probed. */
+#if defined(GU_EXPERIMENTAL_3090)
+static EFI_STATUS BatchArm(VOID) {
+  UINTN eligible = 0;
+  for (UINTN i = 0; i < GuTargetCount; i++) if (Cards[i].Eligible) eligible++;
+  if (!eligible) return EFI_UNSUPPORTED;
+  if (!GuLogReady() || Gu.fault) return EFI_DEVICE_ERROR;
+  GuLogText("\nBATCH PLAN\n");
+  for (UINTN i = 0; i < GuTargetCount; i++)
+    GuLog("batch[%zu] %s %s\n", (size_t)i, GuTargets[i].Name,
+      Cards[i].Eligible ? "WILL UNLOCK" : "excluded (gate or pin)");
+  GuLog("batch eligible=%zu of %zu; every transaction is confined to its own card.\n",
+    (size_t)eligible, (size_t)GuTargetCount);
+  GuConsole("Multi-target unlock ready. U to authorize every listed card, Esc to abort.\n");
+  if (!GuLogReady()) return EFI_DEVICE_ERROR;
+  Stage = "batch-arming";
+  EFI_STATUS status = Table->ConIn->Reset(Table->ConIn, FALSE);
+  if (EFI_ERROR(status)) return status;
+  for (UINTN wait = 0; wait < 3000; wait++) {
+    EFI_INPUT_KEY key = {0};
+    status = Table->ConIn->ReadKeyStroke(Table->ConIn, &key);
+    if (!EFI_ERROR(status)) {
+      if (key.UnicodeChar == L'u' || key.UnicodeChar == L'U') return EFI_SUCCESS;
+      if (key.ScanCode == 0x17 || key.UnicodeChar == 27) return EFI_ABORTED;
+    }
+    GuStall(100000); /* 3 s + 5 min window */
+  }
+  return EFI_TIMEOUT;
+}
+
+/* Full phase B for one card. Returns the card status; *Stop ends the batch. */
+static EFI_STATUS CardUnlock(EFI_HANDLE Image, UINTN Index, BOOLEAN *Stop) {
+  *Stop = FALSE;
+  CardReset(Image, Index);
+  CardBanner(Index, "PHASE B UNLOCK", NULL);
+  EFI_STATUS status;
+
+  Stage = "target";   status = Step(FindTarget());             if (EFI_ERROR(status)) return status;
+  Stage = "display";  Gu.display_ok = DisplayCheck();
+  status = Step(Gu.display_ok ? EFI_SUCCESS : EFI_UNSUPPORTED); if (EFI_ERROR(status)) return status;
+  Stage = "bar0";     status = Step(BarCheck());               if (EFI_ERROR(status)) return status;
+  Stage = "prom";     status = Step(PromCheck());              if (EFI_ERROR(status)) return status;
+  Stage = "cold-state"; status = Step(ColdCheck());            if (EFI_ERROR(status)) return status;
+
+  Stage = "ownership"; status = GuClaimController();
+  if (status == EFI_ACCESS_DENIED) {
+    status = GuFindReleaseOwner(Table, &PendingOwner, TRUE);
+    if (!EFI_ERROR(status)) GuLogText("Exclusive ownership deferred until the batch release of this card.\n");
+  }
+  status = Step(status); if (EFI_ERROR(status)) return status;
+
+  Stage = "config-recheck"; status = Step(ConfigCheck(FALSE)); if (EFI_ERROR(status)) return status;
+  Stage = "bar0";           status = Step(BarCheck());         if (EFI_ERROR(status)) return status;
+  Stage = "prom";           status = Step(PromCheck());        if (EFI_ERROR(status)) return status;
+  Stage = "cold-state";     status = Step(ColdCheck());        if (EFI_ERROR(status)) return status;
+
+  if (PendingOwner.agent) {
+    GU_RELEASE_OWNER current;
+    Stage = "owner-recheck";
+    GuLogText("Batch confirmed: release this card's firmware driver once, then revalidate.\n");
+    if (!GuLogReady()) return EFI_DEVICE_ERROR;
+    status = GuFindReleaseOwner(Table, &current, FALSE);
+    if (!EFI_ERROR(status) && !GuSameReleaseOwner(&PendingOwner, &current)) status = EFI_ABORTED;
+    if (EFI_ERROR(status)) return Step(status);
+    EFI_PCI_IO_PROTOCOL *prior = Gu.pci;
+    Stage = "driver-release"; Cards[Index].Released = TRUE; Gu.armed = TRUE; Gu.pci = NULL;
+    EFI_STATUS released = Gu.bs->DisconnectController(Gu.handle, current.agent, NULL);
+    EFI_TPL tpl = Gu.bs->RaiseTPL(TPL_NOTIFY);
+    EFI_STATUS refreshed = GuRefreshTargetPci();
+    Gu.bs->RestoreTPL(tpl);
+    GuLog("driver release: status=%#llx refresh=%#llx same_pci=%u\n",
+      (unsigned long long)released, (unsigned long long)refreshed, (unsigned)(Gu.pci == prior));
+    status = Step(EFI_ERROR(released) ? released
+          : EFI_ERROR(refreshed) ? refreshed
+          : Gu.pci != prior ? EFI_COMPROMISED_DATA : EFI_SUCCESS);
+    /* Once the driver is gone this card cannot be handed back half-released. */
+    if (EFI_ERROR(status)) { *Stop = TRUE; ReleaseHalt(status, Cards[Index].Attempted); return status; }
+    Stage = "ownership-after-release"; status = Step(GuClaimController());
+    if (EFI_ERROR(status)) { *Stop = TRUE; ReleaseHalt(status, Cards[Index].Attempted); return status; }
+    Stage = "display-after-release"; Gu.display_ok = DisplayCheck();
+    status = Step(Gu.display_ok ? EFI_SUCCESS : EFI_UNSUPPORTED);
+    if (EFI_ERROR(status)) { *Stop = TRUE; ReleaseHalt(status, Cards[Index].Attempted); return status; }
+    Stage = "decode-after-release"; status = Step(RestoreDecode());
+    if (EFI_ERROR(status)) { *Stop = TRUE; ReleaseHalt(status, Cards[Index].Attempted); return status; }
+    Stage = "config-after-release"; status = Step(ConfigCheck(FALSE));
+    if (EFI_ERROR(status)) { *Stop = TRUE; ReleaseHalt(status, Cards[Index].Attempted); return status; }
+    Stage = "bar0-after-release"; status = Step(BarCheck());
+    if (EFI_ERROR(status)) { *Stop = TRUE; ReleaseHalt(status, Cards[Index].Attempted); return status; }
+    Stage = "prom-after-release"; status = Step(PromCheck());
+    if (EFI_ERROR(status)) { *Stop = TRUE; ReleaseHalt(status, Cards[Index].Attempted); return status; }
+    Stage = "cold-after-release"; status = Step(ColdCheck());
+    if (EFI_ERROR(status)) { *Stop = TRUE; ReleaseHalt(status, Cards[Index].Attempted); return status; }
+  }
+
+  Stage = "final-prom"; status = Step(PromCheck()); if (EFI_ERROR(status)) return status;
+  Stage = "final-cold"; status = Step(ColdCheck()); if (EFI_ERROR(status)) return status;
+  if (!Gu.profile_verified || Gu.fault) return EFI_ACCESS_DENIED;
+
+  GuLogText("ARMED: this card's transaction is starting. Do not reset or remove the USB.\n");
+  if (!GuLogReady()) return EFI_DEVICE_ERROR;
+  Stage = "transaction"; Gu.armed = TRUE; Cards[Index].Attempted = TRUE;
+  UINT64 mask = 0xffffffffULL;
+  struct pci_dev device = {.dev = {.dma_mask = &mask, .coherent_dma_mask = 0xffffffffULL},
+                           .pm_cap = Gu.pm_cap, .refs = 1};
+  struct gpu_unlock_610_shared shared = {0};
+  int result = gpu_unlock_610_load_shared(&device, &shared);
+  if (!result) result = gpu_unlock_610_unlock(&device, &shared);
+  EFI_STATUS contained = GuClearMaster();
+  LogContainment();
+  GuLog("transaction result=%d containment=%#llx started=%u quiesced=%u fault=%u retained=%u maps=%u FLR=%u\n",
+    result, (unsigned long long)contained, Gu.started, Gu.quiesced, Gu.fault, Gu.retained, Gu.dma_count, Gu.flrs);
+  if (EFI_ERROR(contained) || !GuSafeToReturn() || Gu.allocations || (Gu.started && result))
+    Halt();
+  gpu_unlock_610_release_shared(&shared);
+  Gu.armed = FALSE;
+  Cards[Index].Result = result;
+  Cards[Index].Unlocked = (result == 0);
+  Cards[Index].Clean = GuSafeToReturn();
+  if (Gu.owned) {
+    EFI_STATUS closed = Gu.bs->CloseProtocol(Gu.handle, &PciGuid, Image, NULL);
+    if (EFI_ERROR(closed)) { if (Cards[Index].Released) ReleaseHalt(closed, TRUE); }
+    else Gu.owned = FALSE;
+  }
+  return result ? EFI_DEVICE_ERROR : EFI_SUCCESS;
+}
+
+/* Post-batch proof that every unlocked card still reports the unlocked
+   selector state, in the same boot, with every other card untouched. */
+static void CardRetention(EFI_HANDLE Image, UINTN Index) {
+  CardReset(Image, Index);
+  EFI_STATUS s = FindTarget();
+  if (EFI_ERROR(s)) { GuLog("retained[%zu] identity re-read failed status=%#llx\n",
+      (size_t)Index, (unsigned long long)s); return; }
+  s = BarCheck();
+  if (EFI_ERROR(s)) { GuLog("retained[%zu] bar0 re-read failed status=%#llx\n",
+      (size_t)Index, (unsigned long long)s); return; }
+  UINT32 ss0 = GuRead32(GU_FEAT_SS0_OFFSET), ss1 = GuRead32(GU_FEAT_SS1_OFFSET);
+  Cards[Index].Ss0 = ss0; Cards[Index].Ss1 = ss1;
+  Cards[Index].Retained = !Gu.fault && ss0 == 0x88888888U && ss1 == 0x8U;
+  GuLog("retained[%zu] %s ss0=%#x ss1=%#x fault=%u\n",
+    (size_t)Index, Cards[Index].Retained ? "YES" : "NO", ss0, ss1, (unsigned)Gu.fault);
+}
+#endif /* GU_EXPERIMENTAL_3090 (BatchArm/CardUnlock/CardRetention) */
+
+EFI_STATUS EFIAPI efi_main(EFI_HANDLE Image, EFI_SYSTEM_TABLE *St) {
+  if (!St || !St->BootServices || !St->RuntimeServices) return EFI_INVALID_PARAMETER;
+  Table = St;
+  GuInit(St->BootServices, NULL);
+  Gu.image = Image; Gu.display_check = DisplayCheck;
+  memset(&PendingOwner, 0, sizeof(PendingOwner));
+  memset(InitialConfig, 0, sizeof(InitialConfig));
+  memset(Cards, 0, sizeof(Cards));
+
+  Stage = "usb-log"; EFI_STATUS status = GuIoOpen(Image, St);
+  if (EFI_ERROR(status)) return status;
+
+  Stage = "target-table";
+  if (!GuTargetTableValid()) {
+    GuLogText("TARGET TABLE INVALID: duplicate or malformed identity; refusing to run.\n");
+    GuIoClose(); return EFI_COMPROMISED_DATA;
+  }
+  GuLog("multi-target build: targets=%zu max=%u\n", (size_t)GuTargetCount, (unsigned)GU_TARGET_MAX);
+
+  UINT8 secure = 0xff; UINTN bytes = 1;
+  Stage = "secure-boot";
+  status = St->RuntimeServices->GetVariable(L"SecureBoot", &GlobalGuid, NULL, &bytes, &secure);
+  if (EFI_ERROR(status) || bytes != 1 || secure) status = EFI_SECURITY_VIOLATION;
+  else status = Step(status);
+  if (EFI_ERROR(status)) goto finish;
+  Stage = "watchdog"; status = Step(Gu.bs->SetWatchdogTimer(0, 0, 0, NULL));
+  if (EFI_ERROR(status)) goto finish;
+
+  /* ---- Phase A: read-only preflight, one card at a time ---- */
+  for (UINTN i = 0; i < GuTargetCount; i++) {
+    const GU_TARGET *T = &GuTargets[i];
+    CardReset(Image, i);
+    CardBanner(i, "PHASE A PREFLIGHT", NULL);
+    Cards[i].Pinned = GuTargetPinned(T);
+    Cards[i].Probe = CardProbe(i);
+    Cards[i].ProbeRead = !Gu.fault && GuLogReady();
+    /* Only a card that cleared every read-only gate on its own pins may be
+       armed. GU_PREFLIGHT_ONLY builds stop inside ColdCheck by construction, so
+       their "not ready" is reported as read-only, never as eligible. */
+    Cards[i].Note = !Cards[i].ProbeRead ? "unreadable" :
+                    !Cards[i].Pinned ? "unpinned" :
+                    GU_PREFLIGHT_ONLY ? "read-only" :
+                    EFI_ERROR(Cards[i].Probe) ? "gate-failed" :
+                    !T->UnlockAllowed ? "disallowed" : "clean";
+    Cards[i].Eligible = Cards[i].Pinned && T->UnlockAllowed && Cards[i].ProbeRead &&
+                        !EFI_ERROR(Cards[i].Probe) && !GU_PREFLIGHT_ONLY;
+    GuLog("phaseA[%zu] %s probe=%#llx pinned=%u allowed=%u eligible=%u note=%s\n",
+      (size_t)i, T->Name, (unsigned long long)Cards[i].Probe, (unsigned)Cards[i].Pinned,
+      (unsigned)T->UnlockAllowed, (unsigned)Cards[i].Eligible, Cards[i].Note);
+    /* A logging failure invalidates every later card, stop collecting. */
+    if (!GuLogReady()) break;
+  }
+
+#if !defined(GU_EXPERIMENTAL_3090)
+  GuLogText("DIAGNOSTIC PREFLIGHT ONLY: every card above was read, none can arm.\n");
+  status = EFI_SUCCESS;
+  goto report;
+#else
+  {
+    UINTN eligible = 0;
+    for (UINTN i = 0; i < GuTargetCount; i++) if (Cards[i].Eligible) eligible++;
+    if (!eligible) {
+      GuLogText("NO TARGET CLEARED ITS OWN GATES: no transaction will start.\n");
+      status = EFI_NOT_READY;
+      goto report;
+    }
+
+    Stage = "assets"; status = Step(GuLoadAssets());
+    if (EFI_ERROR(status)) goto report;
+    Stage = "batch-arming"; status = Step(BatchArm());
+    if (EFI_ERROR(status)) {
+      /* The batch was never authorized: no card is armed. Attribute it to every
+         eligible card, not to index 0, so the table never blames the wrong card. */
+      for (UINTN i = 0; i < GuTargetCount; i++)
+        if (Cards[i].Eligible) Cards[i].Note = "batch not authorized";
+      goto report;
+    }
+
+    /* ---- Phase B: per-card revalidation, then that card's transaction ---- */
+    for (UINTN i = 0; i < GuTargetCount; i++) {
+      if (!Cards[i].Eligible) { GuLog("phaseB[%zu] %s skipped note=%s\n", (size_t)i, GuTargets[i].Name, Cards[i].Note); continue; }
+      BOOLEAN stop = FALSE;
+      EFI_STATUS s = CardUnlock(Image, i, &stop);
+      Cards[i].Clean = GuSafeToReturn();
+      GuLog("phaseB[%zu] %s unlock=%#llx result=%d clean=%u\n", (size_t)i, GuTargets[i].Name,
+        (unsigned long long)s, Cards[i].Result, (unsigned)Cards[i].Clean);
+      if (stop) {
+        GuLogText("BATCH STOPPED: this card could not be returned cleanly; earlier cards stay as logged.\n");
+        status = s;
+        goto report;
+      }
+      /* Distinguish "the transaction ran and failed" from "this card never got
+         as far as the transaction": only Attempted proves a transaction began. */
+      if (EFI_ERROR(s)) Cards[i].Note = Cards[i].Attempted ? "transaction-failed" : "revalidation-failed";
+    }
+
+    /* ---- Retention: every unlocked card must still read as unlocked ---- */
+    for (UINTN i = 0; i < GuTargetCount; i++) {
+      if (!Cards[i].Unlocked) continue;
+      CardRetention(Image, i);
+    }
+    status = EFI_SUCCESS;
+    for (UINTN i = 0; i < GuTargetCount; i++) {
+      if (!Cards[i].Eligible) continue;
+      if (!Cards[i].Unlocked || !Cards[i].Retained || !Cards[i].Clean) status = EFI_DEVICE_ERROR;
+    }
+  }
+#endif
+
+ report:
+#ifndef GU_BATCH_SILENT
+  GuLogText("\nFOUR-CARD STATUS TABLE\n");
+  for (UINTN i = 0; i < GuTargetCount; i++) {
+    const GU_TARGET *T = &GuTargets[i];
+    GuLog("status[%zu] name=%-4s bdf=%x:%x:%x.%x pinned=%u eligible=%u released=%u unlocked=%u retained=%u clean=%u result=%d note=%s\n",
+      (size_t)i, T->Name, (unsigned)T->Segment, (unsigned)T->Bus, (unsigned)T->Device, (unsigned)T->Function,
+      (unsigned)Cards[i].Pinned, (unsigned)Cards[i].Eligible, (unsigned)Cards[i].Released,
+      (unsigned)Cards[i].Unlocked, (unsigned)Cards[i].Retained, (unsigned)Cards[i].Clean,
+      Cards[i].Result, Cards[i].Note ? Cards[i].Note : "-");
+  }
+  GuLog("batch summary: unlocked=%u retained=%u of %zu\n",
+    (unsigned)(Cards[0].Unlocked + Cards[1].Unlocked + Cards[2].Unlocked + Cards[3].Unlocked),
+    (unsigned)(Cards[0].Retained + Cards[1].Retained + Cards[2].Retained + Cards[3].Retained),
+    (size_t)GuTargetCount);
+#endif
+
+ finish:
+  Gu.armed = FALSE;
+  if (GuLogReady())
+    GuLog("FINAL(multi) status=%#llx stage=%s targets=%zu\n",
+      (unsigned long long)status, Stage, (size_t)GuTargetCount);
+  if (Gu.owned) { Gu.bs->CloseProtocol(Gu.handle, &PciGuid, Image, NULL); Gu.owned = FALSE; }
+  GuReleaseAssets();
+  GuIoClose();
+  if (!EFI_ERROR(status))
+    GuConsole("Multi-target run finished. Read the RUN report on the USB before returning to Windows.\n");
+  else
+    GuConsole("Multi-target run ended without a full unlock set. Read the RUN report.\n");
+  return status;
+}
+#endif /* GU_MULTI_TARGET */

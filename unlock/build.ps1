@@ -5,6 +5,7 @@ param(
  [string]$Python='python',
  [switch]$ExperimentalUnlock,
  [switch]$MachineLocal,
+ [switch]$MultiTarget,
  [ValidateSet('original03100062','observed03000062','entryLatchedSs1Preserve','entryLatchedSs1Full')][string]$StockProfile
 )
 $ErrorActionPreference='Stop'
@@ -13,10 +14,12 @@ try {
  if(!(Test-Path -LiteralPath $PSScriptRoot)){throw 'Missing output parent'}
  if($ExperimentalUnlock -and !$PSBoundParameters.ContainsKey('StockProfile')){throw '-StockProfile is required with -ExperimentalUnlock'}
  if(!$ExperimentalUnlock -and $PSBoundParameters.ContainsKey('StockProfile')){throw '-StockProfile is only valid with -ExperimentalUnlock'}
- $out=if($ExperimentalUnlock){"build/experimental/$StockProfile"}elseif($MachineLocal){'build/local'}else{'build'}
- $name=if($ExperimentalUnlock){"RTX3090-EXPERIMENTAL-$StockProfile"}elseif($MachineLocal){'RTX3090-PREFLIGHT-LOCAL'}else{'RTX3090-PREFLIGHT'}
+ if($MultiTarget -and $MachineLocal){throw '-MultiTarget and -MachineLocal are mutually exclusive machine profiles'}
+ $out=if($MultiTarget){"build/multi/"+$(if($ExperimentalUnlock){"experimental/$StockProfile"}else{'preflight'})}elseif($ExperimentalUnlock){"build/experimental/$StockProfile"}elseif($MachineLocal){'build/local'}else{'build'}
+ $name=if($MultiTarget){"RTX3090-MULTI-"+$(if($ExperimentalUnlock){"EXPERIMENTAL-$StockProfile"}else{'PREFLIGHT'})}elseif($ExperimentalUnlock){"RTX3090-EXPERIMENTAL-$StockProfile"}elseif($MachineLocal){'RTX3090-PREFLIGHT-LOCAL'}else{'RTX3090-PREFLIGHT'}
  $defines=@()
  if($MachineLocal){$defines+= '-DGU_MACHINE_LOCAL'}
+ if($MultiTarget){$defines+= '-DGU_MULTI_TARGET'}
   if($ExperimentalUnlock){$defines+= '-DGU_EXPERIMENTAL_3090';$defines+=$(switch($StockProfile){'original03100062'{'-DGU_STOCK_PROFILE_ORIGINAL_03100062'} 'observed03000062'{'-DGU_STOCK_PROFILE_OBSERVED_03000062'} 'entryLatchedSs1Preserve'{'-DGU_ENTRY_LATCHED_SS1_PRESERVE'} 'entryLatchedSs1Full'{'-DGU_ENTRY_LATCHED_SS1_FULL'}})}
  New-Item -ItemType Directory -Path $out -Force | Out-Null
  # PromSha256 records the runtime PROM pin baked into THIS build (consumed by
@@ -27,8 +30,31 @@ try {
   $m=Select-String -LiteralPath 'machine_local.h' -Pattern '#define\s+GU_PROM_SHA256_LOCAL\s+"([0-9a-f]{64})"'
   $promPin=if($m){$m.Matches[0].Groups[1].Value}else{'log-only (unpinned in machine_local.h)'}
  }
+ if($MultiTarget){$promPin='per-card (targets_local.h; see Targets below)'}
  $sources=@('app','app_io','ownership','format','runtime','sha256','checks','port','compat',
   'vendor/unlock_610','vendor/prep_610','vendor/layout_610','vendor/vbios_610','vendor/gfw_eval')
+ if($MultiTarget){$sources+= 'targets'}
+ # Per-card table for the manifest. targets_local.h wraps a long GU_CARD row across
+ # continuation lines, so the file is joined before matching: a line-oriented match
+ # silently drops any row carrying a 64-char PROM pin, which makes the manifest
+ # under-report the targets actually baked into the binary.
+ $targetRows=@()
+ if($MultiTarget){
+  $joined=(Get-Content -Raw -LiteralPath 'targets_local.h') -replace '\\\r?\n',' '
+  $pattern='GU_CARD\(\s*"([^"]*)"\s*,\s*(\d+)\s*,\s*(0x[0-9A-Fa-f]+)U?\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(0x[0-9A-Fa-f]+)U?\s*,\s*(0x[0-9A-Fa-f]+)U?\s*,\s*"([0-9a-f]*)"\s*,\s*(TRUE|FALSE)\s*\)'
+  foreach($m in [regex]::Matches($joined,$pattern)){
+   $targetRows+=[ordered]@{Name=$m.Groups[1].Value;Segment=[int]$m.Groups[2].Value;
+    Bus=$m.Groups[3].Value;Device=[int]$m.Groups[4].Value;Function=[int]$m.Groups[5].Value;
+    Subsystem=$m.Groups[6].Value;ConfigC8=$m.Groups[7].Value;
+    PromSha256=$(if($m.Groups[8].Value){$m.Groups[8].Value}else{'<unpinned: probe only>'});
+    UnlockAllowed=($m.Groups[9].Value -eq 'TRUE')}
+  }
+  if($targetRows.Count -eq 0){throw 'targets_local.h defines no parsable GU_CARD rows'}
+  $declared=([regex]::Matches($joined,'GU_CARD\(')).Count
+  if($targetRows.Count -ne $declared){
+   throw ('targets_local.h: parsed {0} of {1} GU_CARD rows' -f $targetRows.Count,$declared)
+  }
+ }
  $objects=@()
  foreach($source in $sources) {
   $object="$out/"+($source -replace '/','_')+'.obj'
@@ -47,6 +73,8 @@ try {
   OriginalBaselineCapture='G:/RTX3090-PREFLIGHT/RUN00/REPORT.TXT';
   StockProfileSource=$(if($StockProfile -like 'entryLatchedSs1*'){'Explicit immutable validated entry latch; no fixed stock selector assumption'}elseif($StockProfile -eq 'observed03000062'){'Explicit observed03000062 experiment selection; original baseline capture does not evidence this SS0'}elseif($ExperimentalUnlock){'OriginalBaselineCapture'}else{'preflight has no selected stock profile'});
   PromSha256=$promPin;
+  Targets=$(if($MultiTarget){$targetRows}else{$null});
+  TargetCount=$(if($MultiTarget){$targetRows.Count}else{$null});
   DeviceMemorySize='0x6000';HardwareTested=$false;
   EfiSha256=(Get-FileHash -LiteralPath "$out/$name.EFI" -Algorithm SHA256).Hash;
   Headers=@(Get-ChildItem -LiteralPath . -Recurse -File -Filter '*.h' | Where-Object {$_.FullName -notlike '*\build\*'} | Sort-Object FullName | ForEach-Object {[ordered]@{Path=$_.FullName.Substring($PSScriptRoot.Length+1);Sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash}});

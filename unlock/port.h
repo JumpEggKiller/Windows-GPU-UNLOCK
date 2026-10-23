@@ -4,8 +4,17 @@
 #include <Protocol/DevicePath.h>
 #include <stddef.h>
 
+#if defined(GU_MACHINE_LOCAL) && defined(GU_MULTI_TARGET)
+#error Select exactly one machine profile: single-card or multi-target
+#endif
 #ifdef GU_MACHINE_LOCAL
 #include "machine_local.h"
+#endif
+/* Multi-target profile: the same guarded expressions below, except that the
+   expected identity of the selected card is read from the audited table instead
+   of a compile-time constant. Only the SOURCE of the expected value changes. */
+#ifdef GU_MULTI_TARGET
+#include "targets.h"
 #endif
 #define GU_BOARD_ID 0x220410deU
 #ifndef GU_BOARD_SUBSYSTEM
@@ -31,6 +40,15 @@
 #ifndef GU_CONFIG_LOG_ONLY_PINS
 #define GU_CONFIG_LOG_ONLY_PINS 0
 #endif
+/* config[0xc8] identity dword. Single-card builds keep the rig-verified literal;
+   the multi-target profile supplies it per card from the audited table. */
+#ifndef GU_CONFIG_C8_PIN
+#define GU_CONFIG_C8_PIN 0x00050011U
+#endif
+/* An unpinned card may be observed but never armed: a read-only preflight
+   accepts any 0xc8 so the value can be captured, an unlocking build demands
+   the pin and fails closed without it. */
+#define GU_CONFIG_C8_OK(C8) ((GU_CONFIG_C8_PIN) ? ((C8)==(GU_CONFIG_C8_PIN)) : ((GU_PREFLIGHT_ONLY) ? TRUE : FALSE))
 #ifndef GU_DISPLAY_LOG_ONLY
 #define GU_DISPLAY_LOG_ONLY 0
 #endif
