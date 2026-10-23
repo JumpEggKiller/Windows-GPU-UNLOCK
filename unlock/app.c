@@ -766,12 +766,15 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE Image, EFI_SYSTEM_TABLE *St) {
     Cards[i].ProbeRead = !Gu.fault && GuLogReady();
     /* Only a card that cleared every read-only gate on its own pins may be
        armed. GU_PREFLIGHT_ONLY builds stop inside ColdCheck by construction, so
-       their "not ready" is reported as read-only, never as eligible. */
+       their "not ready" is reported as read-only, never as eligible.
+       "disallowed" is checked before the gate result on purpose: a card that is
+       switched off by policy must read as a policy exclusion, not as a gate
+       failure, or the operator cannot tell "we chose not to" from "it refused". */
     Cards[i].Note = !Cards[i].ProbeRead ? "unreadable" :
                     !Cards[i].Pinned ? "unpinned" :
                     GU_PREFLIGHT_ONLY ? "read-only" :
-                    EFI_ERROR(Cards[i].Probe) ? "gate-failed" :
-                    !T->UnlockAllowed ? "disallowed" : "clean";
+                    !T->UnlockAllowed ? "disallowed" :
+                    EFI_ERROR(Cards[i].Probe) ? "gate-failed" : "clean";
     Cards[i].Eligible = Cards[i].Pinned && T->UnlockAllowed && Cards[i].ProbeRead &&
                         !EFI_ERROR(Cards[i].Probe) && !GU_PREFLIGHT_ONLY;
     GuLog("phaseA[%zu] %s probe=%#llx pinned=%u allowed=%u eligible=%u note=%s\n",
@@ -821,7 +824,20 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE Image, EFI_SYSTEM_TABLE *St) {
       }
       /* Distinguish "the transaction ran and failed" from "this card never got
          as far as the transaction": only Attempted proves a transaction began. */
-      if (EFI_ERROR(s)) Cards[i].Note = Cards[i].Attempted ? "transaction-failed" : "revalidation-failed";
+      if (EFI_ERROR(s)) {
+        Cards[i].Note = Cards[i].Attempted ? "transaction-failed" : "revalidation-failed";
+        /* Fail closed for the rest of the batch. A card that failed while leaving
+           itself clean does not prove the machinery is sound for the next card -
+           it is evidence against it - and the first card in the table is the one
+           already known to unlock, so reaching a production card after a failure
+           here would be the least justified transaction of the run. */
+        GuLog("phaseB[%zu] %s failed; the remaining cards are not attempted\n", (size_t)i,
+          GuTargets[i].Name);
+        for (UINTN j = i + 1; j < GuTargetCount; j++)
+          if (Cards[j].Eligible && !Cards[j].Attempted) Cards[j].Note = "batch stopped after an earlier failure";
+        status = s;
+        goto report;
+      }
     }
 
     /* ---- Retention: every unlocked card must still read as unlocked ---- */
@@ -850,7 +866,9 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE Image, EFI_SYSTEM_TABLE *St) {
       (unsigned)Cards[i].Unlocked, (unsigned)Cards[i].Retained, (unsigned)Cards[i].Clean,
       Cards[i].Result, Cards[i].Note ? Cards[i].Note : "-");
   }
-  GuLog("batch summary: unlocked=%u retained=%u of %zu\n",
+  GuLog("batch summary: eligible=%u attempted=%u unlocked=%u retained=%u of %zu targets\n",
+    (unsigned)(Cards[0].Eligible + Cards[1].Eligible + Cards[2].Eligible + Cards[3].Eligible),
+    (unsigned)(Cards[0].Attempted + Cards[1].Attempted + Cards[2].Attempted + Cards[3].Attempted),
     (unsigned)(Cards[0].Unlocked + Cards[1].Unlocked + Cards[2].Unlocked + Cards[3].Unlocked),
     (unsigned)(Cards[0].Retained + Cards[1].Retained + Cards[2].Retained + Cards[3].Retained),
     (size_t)GuTargetCount);

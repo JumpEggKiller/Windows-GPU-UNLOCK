@@ -45,10 +45,32 @@
    on every one. It is a shared platform value here, not a per-card discriminator, so it
    stays pinned per card anyway - a card that changes it must fail its own gate.
    BAR0 is firmware-assigned per card and is NOT pinned: 0x92000000 / 0xf2000000 /
-   0x9b000000 / 0xf8000000 for GPU1 / GPU2 / GPU3 / GPU0 in that same run. */
+   0x9b000000 / 0xf8000000 for GPU1 / GPU2 / GPU3 / GPU0 in that same run.
+
+   PROM digests measured per card by the read-only probe (RUN06), each 1 MiB read from
+   that card's own BAR0+0x300000. GPU1 and GPU2 carry the SAME digest: they carry the same
+   VBIOS (94.02.26.88.07) and the same subsystem, so their ROM images really are identical.
+   That is a measurement, not a copy between cards - what distinguishes them is the BDF,
+   which is pinned separately. GPU3's pre-existing pin reproduced exactly ("live PROM hash
+   matched=1" with no digest printed), which is an independent confirmation of the prose
+   that a cold boot always yields the same ROM.
+
+   UnlockAllowed is policy, not a measurement. GPU0 is measured and fully pinned, but it is
+   FALSE on purpose: it is the display adapter (it owns the GOP at 0000:01:00.0), DisplayCheck
+   refuses any target whose BDF owns a GOP, and RUN06 shows exactly that refusal
+   ("GOP[1] sits on target BDF - refuse", valid=0). Its GOP risk is a separate decision and
+   is not taken here.
+
+   ROW ORDER IS EXECUTION ORDER. GPU3 first because it is the one card whose unlocked result
+   is already verified, so the batch machinery is exercised on a known outcome before it
+   touches a card whose outcome is unknown; then the two production cards; GPU0 last because
+   it owns the console GOP and must not be able to take the earlier cards' log with it. */
 #define GU_CARD_TABLE(GU_CARD)                                                                     \
-  GU_CARD("GPU1", 0, 0x41, 0, 0, 0x38821462U, 0x00050011U, "", TRUE)                               \
-  GU_CARD("GPU2", 0, 0x81, 0, 0, 0x38821462U, 0x00050011U, "", TRUE)                               \
   GU_CARD("GPU3", 0, 0xC1, 0, 0, 0x14541B4CU, 0x00050011U,                                        \
           "e23caae3312afa69407c7cc79538875d5cf36e78065ce4c0d615a61bffa7e5bb", TRUE)                \
-  GU_CARD("GPU0", 0, 0x01, 0, 0, 0x14541B4CU, 0x00050011U, "", TRUE)
+  GU_CARD("GPU1", 0, 0x41, 0, 0, 0x38821462U, 0x00050011U,                                        \
+          "d96a2b5eae93db1a2ad4d6b11f7653032b2124e45f96814e573877544620b514", TRUE)                \
+  GU_CARD("GPU2", 0, 0x81, 0, 0, 0x38821462U, 0x00050011U,                                        \
+          "d96a2b5eae93db1a2ad4d6b11f7653032b2124e45f96814e573877544620b514", TRUE)                \
+  GU_CARD("GPU0", 0, 0x01, 0, 0, 0x14541B4CU, 0x00050011U,                                        \
+          "6e6deb3c5f07d0f9f4534a3e1536aac8ddfa34f37d0d16f9528d0f2c31f0ad04", FALSE)

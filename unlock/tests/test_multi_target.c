@@ -64,20 +64,48 @@ int main(void) {
   Check(!GuTargetSelect(GuTargetCount), "select rejects index == count");
   Check(!GuTargetSelect(GU_TARGET_MAX), "select rejects index beyond max");
 
-  /* Only GPU3 carries a measured PROM hash and verified config[0xc8]. */
+  /* Pin state is derived, never asserted from a name: a card is pinned exactly when it
+     carries all three per-card values. Hardcoding "only GPU3 is pinned" made this test a
+     snapshot of one build's pins, which breaks the moment the probe fills in another card -
+     and says nothing about whether the derivation is right. */
   for (I = 0; I < GuTargetCount; ++I) {
-    BOOLEAN Pinned = GuTargetPinned(&GuTargets[I]);
-    snprintf(Name, sizeof(Name), "%s pin state is %s", GuTargets[I].Name,
-      strcmp(GuTargets[I].Name, "GPU3") == 0 ? "pinned" : "unpinned");
-    if (strcmp(GuTargets[I].Name, "GPU3") == 0) Check(Pinned, Name);
-    else Check(!Pinned, Name);
+    const GU_TARGET *T = &GuTargets[I];
+    BOOLEAN Expect = (T->PromSha256 && T->PromSha256[0] && T->ConfigC8 != 0 && T->Subsystem != 0)
+                       ? TRUE : FALSE;
+    snprintf(Name, sizeof(Name), "%s pinned=%u matches its own pin fields", T->Name,
+      (unsigned)Expect);
+    Check(GuTargetPinned(T) == Expect, Name);
   }
   Check(GuTargetPinned(NULL) == FALSE, "null target is not pinned");
+  {
+    /* A card missing any single field must not count as pinned. */
+    GU_TARGET T;
+    memset(&T, 0, sizeof(T));
+    T.Name = "X"; T.Bus = 0x42; T.Subsystem = 0x11112222U; T.ConfigC8 = 0x00050011U;
+    T.PromSha256 = "";
+    Check(!GuTargetPinned(&T), "empty PROM pin is not pinned");
+    T.PromSha256 = "aa";
+    Check(GuTargetPinned(&T), "all three fields present is pinned");
+    T.ConfigC8 = 0;
+    Check(!GuTargetPinned(&T), "zero c8 pin is not pinned");
+    T.ConfigC8 = 0x00050011U; T.Subsystem = 0;
+    Check(!GuTargetPinned(&T), "zero subsystem is not pinned");
+  }
 
   /* config[0xc8]: a pinned card must match exactly; an unpinned card is only
-     observable where the build cannot arm anyway. */
-  GuTargetSelect(2u);
-  Check(GuTargets[2].ConfigC8 == 0x00050011U, "GPU3 c8 pin is the measured value");
+     observable where the build cannot arm anyway. GPU3 is located by name, never by
+     index - the row order is execution order and is expected to change. */
+  {
+    UINTN G3 = GuTargetCount;
+    for (I = 0; I < GuTargetCount; ++I)
+      if (strcmp(GuTargets[I].Name, "GPU3") == 0) G3 = I;
+    Check(G3 < GuTargetCount, "GPU3 row present");
+    if (G3 < GuTargetCount) {
+      Check(GuTargetSelect(G3) && GuTargetIndex() == G3, "GPU3 selected by name");
+      Check(GuTargets[G3].ConfigC8 == 0x00050011U, "GPU3 c8 pin is the measured value");
+      Check(GuTargetPinned(&GuTargets[G3]), "GPU3 is fully pinned");
+    }
+  }
   Check(GU_CONFIG_C8_OK(0x00050011U), "pinned c8 accepted");
   Check(!GU_CONFIG_C8_OK(0x00050010U), "pinned c8 mismatch rejected");
   Check(!GU_CONFIG_C8_OK(0U), "pinned c8 zero rejected");
