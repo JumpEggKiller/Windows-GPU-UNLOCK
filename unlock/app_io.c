@@ -10,6 +10,7 @@ static EFI_GUID LoadedGuid=EFI_LOADED_IMAGE_PROTOCOL_GUID,PathGuid=EFI_DEVICE_PA
 static EFI_SYSTEM_TABLE *Table;
 static EFI_FILE_PROTOCOL *Root,*Parent,*Run,*Report;
 static BOOLEAN LogFault,ConsoleFault;
+static UINTN LogDefects;
 typedef struct {const char *name;CHAR16 *file;UINTN size;const char *hash;} ASSET_SPEC;
 static const ASSET_SPEC Specs[]={
  {"gpu-unlock/610.43.03/booter_load_ga102.bin",L"ASSETS\\booter_load_ga102.bin",61256,"056cbc064a888f80717726c54d7f64fcd68044d123870c95a74f37f4975dcaa4"},
@@ -20,9 +21,9 @@ static const ASSET_SPEC Specs[]={
 };
 static VOID LogError(VOID){LogFault=TRUE;if(Gu.armed)Gu.fault=TRUE;}
 /* A console failure is not a log failure. The USB report is the audit artifact; the
-   screen is a convenience. RUN04 lost its whole per-card table because one ConOut write
-   failed and took the file log with it. The armed-transaction containment still trips,
-   because a card must not be left armed when nothing can be reported. */
+   screen is a convenience. A dead console must not take the write path down with it.
+   The armed-transaction containment still trips, because a card must not be left armed
+   when nothing can be reported. */
 static VOID ConsoleError(VOID){ConsoleFault=TRUE;if(Gu.armed)Gu.fault=TRUE;}
 VOID GuConsole(const char *Text) {
   if(!Table || !Table->ConOut || !Table->ConOut->OutputString){ConsoleError();return;}
@@ -33,6 +34,7 @@ VOID GuConsole(const char *Text) {
   }
 }
 BOOLEAN GuConsoleFault(VOID){return ConsoleFault;}
+UINTN GuLogDefects(VOID){return LogDefects;}
 VOID GuLogText(const char *Text) {
   GuConsole(Text);
   if(!Report || LogFault){LogError();return;}
@@ -40,10 +42,30 @@ VOID GuLogText(const char *Text) {
   EFI_STATUS status=Report->Write(Report,&written,(VOID *)Text);
   if(EFI_ERROR(status) || written!=expected || EFI_ERROR(Report->Flush(Report)))LogError();
 }
+/* The custom formatter refuses conversions it does not implement and reports SIZE_MAX.
+   Turning that into LogError() is wrong: a single bad format string would silence every
+   later line, i.e. the audit log dies of a typo. RUN04 and RUN05 both lost their per-card
+   status table and their FINAL line exactly that way (the offender was "%-4s"; width is
+   implemented for integers only). Record the defect, keep writing, and count it so the
+   FINAL line can declare it. */
 VOID GuLog(const char *Format,...) {
-  char text[1024];va_list args;va_start(args,Format);
+  char text[1024];va_list args;
+  if(!Format){LogDefects++;GuConsole("Log format is null.\n");return;}
+  va_start(args,Format);
   size_t n=GuFormatV(text,sizeof(text),Format,args);va_end(args);
-  if(n>=sizeof(text)){LogError();GuConsole("Log format or length error.\n");return;}
+  if(n==SIZE_MAX) {
+    LogDefects++;
+    GuLogText("LOG DEFECT: format string rejected by GuFormatV; raw format follows.\n");
+    GuLogText(Format);
+    GuLogText("\n");
+    return;
+  }
+  if(n>=sizeof(text)) {
+    LogDefects++;
+    GuLogText(text);
+    GuLogText(" [line truncated]\n");
+    return;
+  }
   GuLogText(text);
 }
 BOOLEAN GuLogReady(VOID){return Report && !LogFault;}

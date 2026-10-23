@@ -52,7 +52,51 @@ $guardNeedles=@(
 foreach($needle in $guardNeedles){
   if($pp -notmatch $needle[0]){throw "Guard audit failed: $($needle[1]) is not compiled into the multi-target build"}
 }
+
+# The profile header must actually be reached. RUN05 read every card's config space and then
+# refused all four at the BAR0 pin, because targets.h never included targets_local.h: the
+# rig-level values (GU_BAR0_BASE 0ULL, GU_DISPLAY_LOG_ONLY 1) were defined only in targets.c
+# and every other translation unit silently kept port.h's defaults.
+$macroArgs=@('-std=c11','-E','-dM','-Icompat','-I../deps/edk2/MdePkg/Include','-I../deps/edk2/MdePkg/Include/X64','-D__KERNEL__','-DGU_UEFI_PORT','-DGU_TARGET_PCI_ID=0x220410deU','-DGU_MULTI_TARGET')
+$dm = (& $Clang @macroArgs app.c) -join "`n"
+if($LASTEXITCODE -ne 0){throw 'Preprocess (-dM) failed for the multi-target profile audit'}
+$macroNeedles=@(
+  @('(?m)^#define GU_BAR0_BASE 0ULL\r?$','GU_BAR0_BASE must be the rig value 0ULL (firmware-assigned BAR0)'),
+  @('(?m)^#define GU_DISPLAY_LOG_ONLY 1\r?$','GU_DISPLAY_LOG_ONLY must be 1 (ASPEED console, no AMD iGPU)'),
+  @('(?m)^#define GU_PREFLIGHT_ONLY 1\r?$','the read-only build must keep GU_PREFLIGHT_ONLY 1'),
+  @('(?m)^#define GU_MULTI_TARGET 1\r?$','GU_MULTI_TARGET must be defined')
+)
+foreach($needle in $macroNeedles){
+  if($dm -notmatch $needle[0]){throw "Profile audit failed: $($needle[1])"}
+}
+
+# GuFormatV implements width for integers only and rejects a '-' flag outright. A rejected
+# format used to set a log fault, so one bad string silenced the rest of the audit log
+# (RUN04 and RUN05 both lost their status table that way). Fail the build instead.
+# Comments are blanked first, with newlines preserved so line numbers stay meaningful: the
+# sources legitimately *describe* this defect in prose.
+$fmtProblems = @()
+$fmtFiles = @(Get-ChildItem -Path . -Filter *.c) + @(Get-ChildItem -Path . -Filter *.h)
+if(Test-Path 'vendor'){
+  $fmtFiles += @(Get-ChildItem -Path 'vendor' -Filter *.c) + @(Get-ChildItem -Path 'vendor' -Filter *.h)
+}
+foreach($file in $fmtFiles){
+  $raw = Get-Content -Raw -LiteralPath $file.FullName
+  $blank = [regex]::Replace($raw, '/\*.*?\*/', { param($m) ("`n" * (($m.Value.ToCharArray() | Where-Object { $_ -eq "`n" }).Count)) }, 'Singleline')
+  $lines = $blank -split "`n"
+  for($i=0; $i -lt $lines.Count; $i++){
+    $line = $lines[$i]
+    $cut = $line.IndexOf('//')
+    if($cut -ge 0){ $line = $line.Substring(0,$cut) }
+    if($line -match '%-|%[0-9]+s'){ $fmtProblems += "  $($file.Name):$($i+1): $($line.Trim())" }
+  }
+}
+if($fmtProblems.Count -gt 0){
+  throw ("Format audit failed: GuFormatV cannot render these (no width on %s, no '-' flag):`n" + ($fmtProblems -join "`n"))
+}
 Write-Output 'OK multi-guard-audit'
+Write-Output 'OK multi-profile-audit'
+Write-Output 'OK format-audit'
 & python tests/test_pe.py 'build/RTX3090-PREFLIGHT.EFI' 'build/RTX3090-PREFLIGHT.map'
 if($LASTEXITCODE -ne 0){throw 'PE tests failed (default)'}
 Write-Output 'OK pe-default'

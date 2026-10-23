@@ -503,7 +503,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE Image,EFI_SYSTEM_TABLE *St) {
   if(release_attempted && (EFI_ERROR(status) || Gu.fault))ReleaseHalt(status,attempted);
   if(attempted && !GuSafeToReturn())Halt();
   Gu.armed=FALSE;
-  if(GuLogReady())GuLog("FINAL status=%#llx stage=%s attempted=%u driver_release=%u clean=%u console_fault=%u\n",(unsigned long long)status,Stage,attempted,release_attempted,GuSafeToReturn(),(unsigned)GuConsoleFault());
+  if(GuLogReady())GuLog("FINAL status=%#llx stage=%s attempted=%u driver_release=%u clean=%u console_fault=%u log_defects=%u\n",(unsigned long long)status,Stage,attempted,release_attempted,GuSafeToReturn(),(unsigned)GuConsoleFault(),(unsigned)GuLogDefects());
   else GuConsole("Preflight or logging failed; no new attempt will start.\n");
   if(!GuLogReady()){status=EFI_DEVICE_ERROR;if(release_attempted)ReleaseHalt(status,attempted);if(Gu.started)Halt();}
   if(attempted && !GuSafeToReturn())Halt();
@@ -842,7 +842,9 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE Image, EFI_SYSTEM_TABLE *St) {
   GuLogText("\nFOUR-CARD STATUS TABLE\n");
   for (UINTN i = 0; i < GuTargetCount; i++) {
     const GU_TARGET *T = &GuTargets[i];
-    GuLog("status[%zu] name=%-4s bdf=%x:%x:%x.%x pinned=%u eligible=%u released=%u unlocked=%u retained=%u clean=%u result=%d note=%s\n",
+    /* No width on %s: GuFormatV implements width for integers only and rejects the rest.
+       A rejected format used to set a log fault and silence everything after it. */
+    GuLog("status[%zu] name=%s bdf=%x:%x:%x.%x pinned=%u eligible=%u released=%u unlocked=%u retained=%u clean=%u result=%d note=%s\n",
       (size_t)i, T->Name, (unsigned)T->Segment, (unsigned)T->Bus, (unsigned)T->Device, (unsigned)T->Function,
       (unsigned)Cards[i].Pinned, (unsigned)Cards[i].Eligible, (unsigned)Cards[i].Released,
       (unsigned)Cards[i].Unlocked, (unsigned)Cards[i].Retained, (unsigned)Cards[i].Clean,
@@ -857,8 +859,9 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE Image, EFI_SYSTEM_TABLE *St) {
  finish:
   Gu.armed = FALSE;
   if (GuLogReady())
-    GuLog("FINAL(multi) status=%#llx stage=%s targets=%zu console_fault=%u\n",
-      (unsigned long long)status, Stage, (size_t)GuTargetCount, (unsigned)GuConsoleFault());
+    GuLog("FINAL(multi) status=%#llx stage=%s targets=%zu console_fault=%u log_defects=%u\n",
+      (unsigned long long)status, Stage, (size_t)GuTargetCount, (unsigned)GuConsoleFault(),
+      (unsigned)GuLogDefects());
   if (Gu.owned) { Gu.bs->CloseProtocol(Gu.handle, &PciGuid, Image, NULL); Gu.owned = FALSE; }
   GuReleaseAssets();
   GuIoClose();

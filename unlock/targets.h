@@ -10,6 +10,13 @@
 #pragma once
 #include <Uefi.h>
 
+/* Rig-level values (BAR0 policy, display policy) and the measured card rows live here.
+   This include is load-bearing: port.h's #ifndef defaults below would otherwise win, and
+   the multi build would silently inherit the upstream BAR0 address 0xf5000000 and the
+   stricter display gate. That is exactly what RUN05 did: every card was refused at the
+   BAR0 pin even though each one's config space had been read correctly. */
+#include "targets_local.h"
+
 #define GU_TARGET_MAX 4
 
 typedef struct {
