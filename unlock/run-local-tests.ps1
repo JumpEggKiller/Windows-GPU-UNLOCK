@@ -31,6 +31,28 @@ foreach($profile in @('original03100062','observed03000062','entryLatchedSs1Pres
 RunTest 'machine-local' @('-DGU_MACHINE_LOCAL') @('tests/test_machine_local.c','checks.c') @()
 RunTest 'multi-target' @('-DGU_MULTI_TARGET') @('tests/test_multi_target.c','checks.c','targets.c') @()
 RunTest 'multi-target-arming' @('-DGU_MULTI_TARGET','-DGU_EXPERIMENTAL_3090','-DGU_ENTRY_LATCHED_SS1_FULL') @('tests/test_multi_target.c','checks.c','targets.c') @()
+
+# Guard audit: every place that must resolve identity per card has to be inside the
+# multi-target configuration. RUN04 lost a whole probe run because one such guard
+# (FindTarget's BDF filter) was still machine-local only, so the build matched all four
+# cards and refused every one. Preprocess the real source and assert the expansions are
+# present instead of trusting that all #ifdefs were widened by hand.
+$ppArgs=@('-std=c11','-E','-Icompat','-I../deps/edk2/MdePkg/Include','-I../deps/edk2/MdePkg/Include/X64','-D__KERNEL__','-DGU_UEFI_PORT','-DGU_TARGET_PCI_ID=0x220410deU','-DGU_MULTI_TARGET','-DGU_EXPERIMENTAL_3090','-DGU_ENTRY_LATCHED_SS1_FULL')
+$pp = (& $Clang @ppArgs app.c checks.c port.c) -join "`n"
+if($LASTEXITCODE -ne 0){throw 'Preprocess failed for the multi-target guard audit'}
+$guardNeedles=@(
+  @('if\s*\(\s*s\s*!=\s*\(?\s*GuTargetCurrent\(\)->Segment','FindTarget BDF filter (phase A must select exactly one card)'),
+  @('if\s*\(\s*s\s*!=\s*\(?\s*GuTargetCurrent\(\)->Segment\)?\s*\|\|\s*b\s*!=\s*\(?\s*GuTargetCurrent\(\)->Bus','FindTarget compares bus as well as segment'),
+  @('GuTargetCurrent\(\)->Subsystem','per-card subsystem in checks.c / GuTargetConfig / GuSavePci'),
+  @('GuTargetCurrent\(\)->PromSha256','per-card PROM pin in PromCheck'),
+  @('GuTargetCurrent\(\)->ConfigC8','per-card config[0xc8] pin in ConfigCheck'),
+  @('GOP\[%u\] sits on target BDF','DisplayCheck per-card GOP refusal'),
+  @('PHASE A PREFLIGHT','multi-target phase A present')
+)
+foreach($needle in $guardNeedles){
+  if($pp -notmatch $needle[0]){throw "Guard audit failed: $($needle[1]) is not compiled into the multi-target build"}
+}
+Write-Output 'OK multi-guard-audit'
 & python tests/test_pe.py 'build/RTX3090-PREFLIGHT.EFI' 'build/RTX3090-PREFLIGHT.map'
 if($LASTEXITCODE -ne 0){throw 'PE tests failed (default)'}
 Write-Output 'OK pe-default'

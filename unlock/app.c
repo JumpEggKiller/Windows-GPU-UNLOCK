@@ -236,8 +236,9 @@ static EFI_STATUS FindTarget(VOID) {
     if(!EFI_ERROR(status) && pci)status=pci->Pci.Read(pci,EfiPciIoWidthUint32,0,1,&id);
     if(EFI_ERROR(status) || !pci){GuLog("PCI scan failed: index=%zu status=%#llx\n",(size_t)i,(unsigned long long)status);status=EFI_DEVICE_ERROR;break;}
     if(id==GU_BOARD_ID) {
-#ifdef GU_MACHINE_LOCAL
-      /* Four GA102 cards present; select the pinned BDF only. */
+#if defined(GU_MACHINE_LOCAL) || defined(GU_MULTI_TARGET)
+      /* Four GA102 cards present; select the pinned BDF only. Without this filter the
+         multi-target build matches all four and refuses every card with EFI_UNSUPPORTED. */
       UINTN s,b,d,f;
       if(EFI_ERROR(pci->GetLocation(pci,&s,&b,&d,&f)))continue;
       if(s!=GU_TARGET_SEGMENT || b!=GU_TARGET_BUS || d!=GU_TARGET_DEVICE || f!=GU_TARGET_FUNCTION)continue;
@@ -502,7 +503,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE Image,EFI_SYSTEM_TABLE *St) {
   if(release_attempted && (EFI_ERROR(status) || Gu.fault))ReleaseHalt(status,attempted);
   if(attempted && !GuSafeToReturn())Halt();
   Gu.armed=FALSE;
-  if(GuLogReady())GuLog("FINAL status=%#llx stage=%s attempted=%u driver_release=%u clean=%u\n",(unsigned long long)status,Stage,attempted,release_attempted,GuSafeToReturn());
+  if(GuLogReady())GuLog("FINAL status=%#llx stage=%s attempted=%u driver_release=%u clean=%u console_fault=%u\n",(unsigned long long)status,Stage,attempted,release_attempted,GuSafeToReturn(),(unsigned)GuConsoleFault());
   else GuConsole("Preflight or logging failed; no new attempt will start.\n");
   if(!GuLogReady()){status=EFI_DEVICE_ERROR;if(release_attempted)ReleaseHalt(status,attempted);if(Gu.started)Halt();}
   if(attempted && !GuSafeToReturn())Halt();
@@ -856,8 +857,8 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE Image, EFI_SYSTEM_TABLE *St) {
  finish:
   Gu.armed = FALSE;
   if (GuLogReady())
-    GuLog("FINAL(multi) status=%#llx stage=%s targets=%zu\n",
-      (unsigned long long)status, Stage, (size_t)GuTargetCount);
+    GuLog("FINAL(multi) status=%#llx stage=%s targets=%zu console_fault=%u\n",
+      (unsigned long long)status, Stage, (size_t)GuTargetCount, (unsigned)GuConsoleFault());
   if (Gu.owned) { Gu.bs->CloseProtocol(Gu.handle, &PciGuid, Image, NULL); Gu.owned = FALSE; }
   GuReleaseAssets();
   GuIoClose();

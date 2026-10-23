@@ -9,7 +9,7 @@ static EFI_GUID LoadedGuid=EFI_LOADED_IMAGE_PROTOCOL_GUID,PathGuid=EFI_DEVICE_PA
   FsGuid=EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID,InfoGuid=EFI_FILE_INFO_ID;
 static EFI_SYSTEM_TABLE *Table;
 static EFI_FILE_PROTOCOL *Root,*Parent,*Run,*Report;
-static BOOLEAN LogFault;
+static BOOLEAN LogFault,ConsoleFault;
 typedef struct {const char *name;CHAR16 *file;UINTN size;const char *hash;} ASSET_SPEC;
 static const ASSET_SPEC Specs[]={
  {"gpu-unlock/610.43.03/booter_load_ga102.bin",L"ASSETS\\booter_load_ga102.bin",61256,"056cbc064a888f80717726c54d7f64fcd68044d123870c95a74f37f4975dcaa4"},
@@ -19,14 +19,20 @@ static const ASSET_SPEC Specs[]={
  {"gpu-unlock/610.43.03/gsp_boot_desc_ga102.bin",L"ASSETS\\gsp_boot_desc_ga102.bin",84,"cc5a3fc1f4c47f2fe107b1b68f0176d8a448e6dec84b575e5560ccef5262bf15"}
 };
 static VOID LogError(VOID){LogFault=TRUE;if(Gu.armed)Gu.fault=TRUE;}
+/* A console failure is not a log failure. The USB report is the audit artifact; the
+   screen is a convenience. RUN04 lost its whole per-card table because one ConOut write
+   failed and took the file log with it. The armed-transaction containment still trips,
+   because a card must not be left armed when nothing can be reported. */
+static VOID ConsoleError(VOID){ConsoleFault=TRUE;if(Gu.armed)Gu.fault=TRUE;}
 VOID GuConsole(const char *Text) {
-  if(!Table || !Table->ConOut || !Table->ConOut->OutputString){LogError();return;}
+  if(!Table || !Table->ConOut || !Table->ConOut->OutputString){ConsoleError();return;}
   while(*Text) {
     CHAR16 line[128];UINTN n=0;
     while(*Text && n<126){if(*Text=='\n')line[n++]='\r';line[n++]=(UINT8)*Text++;}
-    line[n]=0;if(EFI_ERROR(Table->ConOut->OutputString(Table->ConOut,line))){LogError();return;}
+    line[n]=0;if(EFI_ERROR(Table->ConOut->OutputString(Table->ConOut,line))){ConsoleError();return;}
   }
 }
+BOOLEAN GuConsoleFault(VOID){return ConsoleFault;}
 VOID GuLogText(const char *Text) {
   GuConsole(Text);
   if(!Report || LogFault){LogError();return;}
