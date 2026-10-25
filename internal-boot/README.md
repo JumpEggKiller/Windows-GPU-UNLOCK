@@ -71,6 +71,32 @@ a person can still choose Windows without any tooling. The firmware order is onl
 *checked*: if `{bootmgr}` is not first, the Windows menu is never reached and the
 installer refuses to arm. A zero timeout is refused for the same reason.
 
+### Automatic boot is the `default` entry, not the first menu row
+
+`displayorder` orders the menu. What an untouched power-on starts after the timeout is the
+boot manager's **`default`** entry, and that is what automatic mode changes:
+
+```
+bcdedit /set {bootmgr} default {entry}
+bcdedit /set {bootmgr} displayorder {entry} {current}
+bcdedit /set {bootmgr} timeout 5
+HiberbootEnabled = 0
+```
+
+All four are required. `Get-AutomaticArmed` (in `install\automatic-policy.ps1`) is the only
+place that decides "armed", and it returns the list of reasons when it is not, so neither the
+promotion, nor `-Check`, nor the tests can conclude "armed" from menu position alone — there is
+a regression test for exactly that mistake. `Set-BootDefault` refuses any identifier that is
+not a concrete entry that already exists (bcdedit itself happily accepts a dangling one) and
+reads the value back; the restore path puts the original default back and fails loudly if the
+unlock entry is still the default afterwards.
+
+The menu timeout is what makes both halves possible: five seconds is long enough for a person
+to press a key and pick Windows, short enough that an unattended power-on is not waiting. A
+second, independent escape hatch exists inside the image itself: the wrapper waits 5 s for Esc
+before starting the child, and the child waits 3 s for Esc before touching any card. Esc at
+either point starts Windows without unlocking anything.
+
 ## Install sequence
 
 Every command is read-only until `-RegisterManual`. Nothing reboots, ever.
@@ -97,10 +123,10 @@ Every command is read-only until `-RegisterManual`. Nothing reboots, ever.
 # 5. stage onto the dedicated ESP only; boot order stays exactly as it is
 .\Install.ps1 -Assets <dir>
 
-# 6. register the manual entry; Windows stays first and default
+# 6. register the manual entry; Windows stays first and stays the default
 .\Install.ps1 -RegisterManual
 
-# 7. only after the manual boot succeeded on real hardware
+# 7. only after the manual boot succeeded on real hardware; this also moves the boot default
 .\Install.ps1 -EnableAutomaticBoot -ConfirmedManualSuccess
 ```
 
@@ -125,18 +151,22 @@ untouched.
 .\Install.ps1 -RestoreWindowsFirst
 ```
 
-Restores the Windows Boot Manager menu to `{current}` first (the created entry is kept
-behind it so the manual test entry survives), restores the saved menu timeout and Fast
-Startup value, and re-points the created entry at the manual image. It needs no working EFI
+Restores the boot **default** first (from the saved `BootDefaultBefore`, else from the verbose
+`bootmgr-before.txt` backup, else keeps the current one only if it is not the unlock entry),
+then the Windows Boot Manager menu to `{current}` first (the created entry is kept behind it so
+the manual test entry survives), the saved menu timeout and Fast Startup value, and re-points
+the created entry at the manual image. It then verifies that Windows is first **and that the
+unlock entry is not the default**, and fails loudly if either is wrong. It needs no working EFI
 image and no matching entry name, and deletes nothing. The installer also writes
 `recovery-plan.json` next to every BCD backup in
 `%ProgramData%\WindowsGPUUnlock\Backups\<timestamp>\`, together with `enum-before.txt`,
 `bootmgr-before.txt`, `firmware-before.txt`, the full BCD export and the partition map from
 before the change.
 
-Five-second path with no tooling at all: power-cycle, let the Windows menu appear, press Esc
-(or wait for the five-second timeout) and choose the first entry, which is Windows. Both the
-menu and the firmware order keep Windows available on purpose.
+Five-second path with no tooling at all: power-cycle, let the Windows menu appear, press a key
+and choose the Windows entry — or let the unlock image start and press Esc inside its own
+3-second cancel window, which starts Windows without unlocking. Both the menu and the firmware
+order keep Windows available on purpose.
 
 If a boot fails, the wrapper stops and prints what to do; it never retries, never resets
 and never forces Windows. Power-cycle and pick Windows from the boot menu, then run
@@ -164,8 +194,9 @@ effort and the file log as authoritative.
 
 Runs the wrapper's host tests (device-path policy, handoff flow fault injection,
 end-of-batch record policy), the installer's boot-policy tests against recorded
-`bcdedit` output, the installer plan test, the boot-store rehearsal, the source audit, and
-the unlock child's own suite.
+`bcdedit` output (including the "first in the menu is not armed" regression), the installer
+plan test, the boot-store rehearsal, the staged-set check, the source audit, and the unlock
+child's own suite.
 
 ## Status
 

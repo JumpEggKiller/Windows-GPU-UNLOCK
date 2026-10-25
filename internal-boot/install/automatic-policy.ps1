@@ -89,6 +89,79 @@ function Assert-OrderKeepsWindows {
   }
 }
 
+# The entry the boot manager actually starts after the timeout. This is the element that
+# decides an unattended boot: displayorder only orders the menu, so an unlock entry that is
+# merely first in the order is never started on its own. Always read it from a verbose
+# enumeration (/v), which prints raw identifiers instead of the {current}/{default} aliases.
+function Get-BootDefault {
+  param([Parameter(Mandatory)][string]$Text)
+  if($Text -notmatch '(?m)^[ \t]*default[ \t]+(\{[0-9a-zA-Z-]+\})[ \t\r]*$'){
+    throw 'The boot manager reports no default entry; refusing to guess what an unattended boot would start'
+  }
+  return $Matches[1].ToLowerInvariant()
+}
+
+# Writes the boot manager's default entry. bcdedit itself accepts an identifier that does not
+# exist (proved against a scratch hive: it returns success and stores a dangling GUID), so the
+# caller must pass the identifiers that really exist and this refuses anything else.
+function Set-BootDefault {
+  param(
+    [Parameter(Mandatory)][string]$Identifier,
+    [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$KnownIdentifiers
+  )
+  $target=$Identifier.ToLowerInvariant()
+  if($target -notmatch '^\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}$'){
+    throw ("Refusing to set a default that is not a concrete entry identifier: '{0}'" -f $Identifier)
+  }
+  $known=@($KnownIdentifiers|ForEach-Object {$_.ToLowerInvariant()})
+  if($known -notcontains $target){
+    throw ("Refusing to set a default that is not in the store: {0}" -f $target)
+  }
+  $output=& bcdedit @('/set','{bootmgr}','default',$target) 2>&1
+  if($LASTEXITCODE -ne 0){
+    throw ("bcdedit /set {{bootmgr}} default failed (exit {0}): {1}" -f $LASTEXITCODE,($output|Out-String).Trim())
+  }
+  $readBack=Get-BootDefault ((& bcdedit @('/enum','{bootmgr}','/v') 2>&1)|Out-String)
+  if($readBack -ne $target){
+    throw ("Boot default did not stick: asked for {0}, read back {1}" -f $target,$readBack)
+  }
+}
+
+# Everything an unattended boot actually depends on, as one predicate so no caller can check
+# only part of it. Judging by displayorder position alone would call the machine armed while
+# it still boots Windows.
+function Get-AutomaticArmed {
+  param(
+    [Parameter(Mandatory)][string]$Entry,
+    [Parameter(Mandatory)][string]$Default,
+    [AllowEmptyCollection()][string[]]$Order = @(),
+    $Timeout,
+    $Hiberboot,
+    [int]$ExpectedTimeout = 5
+  )
+  $reasons=@()
+  $target=$Entry.ToLowerInvariant()
+  if($Default.ToLowerInvariant() -ne $target){
+    $reasons+=("the boot default is {0}, not the unlock entry" -f $Default)
+  }
+  if($Order.Count -eq 0){
+    $reasons+='the displayorder is empty'
+  } elseif($Order[0].ToLowerInvariant() -ne $target){
+    $reasons+=("the first menu entry is {0}" -f $Order[0])
+  }
+  if($null -eq $Timeout){
+    $reasons+='the boot timeout is not set'
+  } elseif([int]$Timeout -ne $ExpectedTimeout){
+    $reasons+=("the boot timeout is {0}s, not {1}s" -f $Timeout,$ExpectedTimeout)
+  }
+  if($null -eq $Hiberboot){
+    $reasons+='Fast Startup state is unknown'
+  } elseif([int]$Hiberboot -ne 0){
+    $reasons+='Fast Startup is still enabled'
+  }
+  return [pscustomobject]@{Armed=($reasons.Count -eq 0);Reasons=$reasons}
+}
+
 # Writes the Windows Boot Manager's application order, refusing to drop the Windows
 # fallback: an order without it would leave a machine that cannot boot its own system
 # without outside help.

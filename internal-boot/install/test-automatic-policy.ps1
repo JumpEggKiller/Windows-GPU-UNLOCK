@@ -155,6 +155,68 @@ Check 'the boot menu timeout is read' {
   if($null -ne (Get-BootTimeout "identifier  {bootmgr}`r`ndisplayorder            {current}")){Fail 'invented a timeout'}
 }
 
+# --- the boot default decides what an unattended power-on actually starts ----
+
+# A verbose enumeration, the only form that prints raw identifiers instead of the
+# {current}/{default} aliases.
+$windowsLoader='{469011d3-a872-11f1-bb02-ea6b3138fbbe}'
+$windowsMenuVerbose=@(
+  'Windows Boot Manager'
+  '--------------------'
+  'identifier              {9dea862c-5cdd-4e70-acc1-f32b344d4795}'
+  ('device                  ' + $bootmgrDevice)
+  ('path                    ' + $bootmgrPath)
+  ('default                 ' + $windowsLoader)
+  ('displayorder            ' + $windowsLoader)
+  'toolsdisplayorder       {memdiag}'
+  'timeout                 30'
+) -join "`r`n"
+
+Check 'the boot default is read as a concrete identifier' {
+  $default=Get-BootDefault $windowsMenuVerbose
+  if($default -ne $windowsLoader){Fail ("read default '{0}'" -f $default)}
+}
+Check 'a boot manager without a default is refused' {
+  Expect { Get-BootDefault "identifier  {bootmgr}`r`ndisplayorder            {current}" } 'reports no default entry'
+}
+Check 'a default that is not in the store is refused before bcdedit runs' {
+  # bcdedit itself accepts a default that does not exist, so this guard is the only thing
+  # standing between a typo and a boot configuration that points at nothing.
+  Expect { Set-BootDefault -Identifier '{11111111-2222-3333-4444-555555555555}' -KnownIdentifiers @($windowsLoader) } 'not in the store'
+}
+Check 'a default that is not a concrete identifier is refused' {
+  Expect { Set-BootDefault -Identifier '{bootmgr}' -KnownIdentifiers @('{bootmgr}') } 'not a concrete entry identifier'
+  Expect { Set-BootDefault -Identifier '{current}' -KnownIdentifiers @('{current}') } 'not a concrete entry identifier'
+}
+Check 'automatic boot is armed only when all four conditions agree' {
+  $armed=Get-AutomaticArmed -Entry $newId -Default $newId -Order @($newId,'{current}') -Timeout 5 -Hiberboot 0 -ExpectedTimeout 5
+  if(-not $armed.Armed){Fail ('not armed: ' + ($armed.Reasons -join '; '))}
+}
+Check 'being first in the menu is not enough to be armed' {
+  # The defect this whole section exists for: the unlock entry is first in the menu, the
+  # timeout is short and Fast Startup is off, yet an unattended power-on still starts Windows
+  # because the default entry never changed.
+  $armed=Get-AutomaticArmed -Entry $newId -Default $windowsLoader -Order @($newId,'{current}') -Timeout 5 -Hiberboot 0 -ExpectedTimeout 5
+  if($armed.Armed){Fail 'called the machine armed while the default entry is still Windows'}
+  if(($armed.Reasons -join '; ') -notmatch 'boot default'){Fail 'the reason does not name the default entry'}
+}
+Check 'a long menu timeout is not armed' {
+  $armed=Get-AutomaticArmed -Entry $newId -Default $newId -Order @($newId,'{current}') -Timeout 30 -Hiberboot 0 -ExpectedTimeout 5
+  if($armed.Armed){Fail 'called the machine armed with a 30s timeout'}
+}
+Check 'a missing menu timeout is not armed' {
+  $armed=Get-AutomaticArmed -Entry $newId -Default $newId -Order @($newId,'{current}') -Timeout $null -Hiberboot 0 -ExpectedTimeout 5
+  if($armed.Armed){Fail 'called the machine armed with no timeout'}
+}
+Check 'Fast Startup still enabled is not armed' {
+  $armed=Get-AutomaticArmed -Entry $newId -Default $newId -Order @($newId,'{current}') -Timeout 5 -Hiberboot 1 -ExpectedTimeout 5
+  if($armed.Armed){Fail 'called the machine armed with Fast Startup on'}
+}
+Check 'the unlock entry behind Windows is not armed either' {
+  $armed=Get-AutomaticArmed -Entry $newId -Default $newId -Order @('{current}',$newId) -Timeout 5 -Hiberboot 0 -ExpectedTimeout 5
+  if($armed.Armed){Fail 'called the machine armed while the unlock entry is second in the menu'}
+}
+
 Write-Host 'automatic-policy: recovery and transition'
 function New-Action([string]$Name,[scriptblock]$Run){return [pscustomobject]@{Name=$Name;Run=$Run}}
 

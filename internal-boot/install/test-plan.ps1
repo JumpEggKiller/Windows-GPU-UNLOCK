@@ -62,8 +62,15 @@ Check 'the plan shows the registration commands' {
 Check 'the plan shows the automatic promotion commands' {
   Need $output 'bcdedit /set <entry> path \EFI\WindowsGPUUnlock\AUTO.EFI'
   Need $output 'bcdedit /set {bootmgr} displayorder <entry> {current}'
+  Need $output 'bcdedit /set {bootmgr} default <entry>'
   Need $output 'bcdedit /set {bootmgr} timeout 5'
   Need $output 'HiberbootEnabled /t REG_DWORD /d 0'
+}
+
+Check 'the plan says the menu position alone does not start the unlock' {
+  Need $output 'default=<entry>,'
+  Need $output 'the menu position alone proves nothing'
+  Need $output '(the boot default is left alone here: Windows still starts if the menu is ignored)'
 }
 
 Check 'the plan keeps Windows in the menu and never deletes an entry' {
@@ -75,7 +82,9 @@ Check 'the plan keeps Windows in the menu and never deletes an entry' {
 Check 'the plan shows the recovery path' {
   Need $output 'restore BootTimeoutBefore'
   Need $output 'restore HiberbootBefore'
+  Need $output 'restore the boot default'
   Need $output 'verify order[0] is {current}'
+  Need $output 'the unlock entry is not the default'
 }
 
 Check 'the plan states that a placeholder build cannot be installed' {

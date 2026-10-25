@@ -242,7 +242,9 @@ function New-BootBackup {
   New-Item -ItemType Directory -Path $target -Force|Out-Null
   [void](Invoke-Bcd @('/export',(Join-Path $target 'bcd-export')))
   (Invoke-Bcd @('/enum'))|Set-Content -LiteralPath (Join-Path $target 'enum-before.txt') -Encoding UTF8
-  (Invoke-Bcd @('/enum','{bootmgr}'))|Set-Content -LiteralPath (Join-Path $target 'bootmgr-before.txt') -Encoding UTF8
+  # /v so the backup holds raw identifiers rather than the {current}/{default} aliases: the
+  # default entry recorded here is what recovery has to put back.
+  (Invoke-Bcd @('/enum','{bootmgr}','/v'))|Set-Content -LiteralPath (Join-Path $target 'bootmgr-before.txt') -Encoding UTF8
   (Invoke-Bcd @('/enum','{fwbootmgr}'))|Set-Content -LiteralPath (Join-Path $target 'firmware-before.txt') -Encoding UTF8
   (Get-Partition|Format-Table -AutoSize|Out-String -Width 200)|Set-Content -LiteralPath (Join-Path $target 'partitions-before.txt') -Encoding UTF8
   Write-Host ("BCD and partition state backed up to {0}" -f $target)
@@ -281,6 +283,9 @@ function Invoke-RegisterManual {
 
   $hiberBefore=Get-Hiberboot
   $timeoutBefore=Get-BootTimeout (Invoke-Bcd @('/enum','{bootmgr}'))
+  # What an unattended boot would start today. Manual registration must not change it, but it
+  # is recorded here because automatic promotion and every recovery path need it back.
+  $defaultBefore=Get-BootDefault (Invoke-Bcd @('/enum','{bootmgr}','/v'))
   $backup=New-BootBackup
   $description='Windows GPU UNLOCK Manual'
   [void](Invoke-Bcd @('/copy','{bootmgr}','/d',$description))
@@ -298,6 +303,9 @@ function Invoke-RegisterManual {
     $order=Get-BootOrder (Invoke-Bcd @('/enum','{bootmgr}'))
     if($order[0] -ne $orderBefore[0]){Fail ("Verification failed: the first menu entry changed from {0} to {1}" -f $orderBefore[0],$order[0])}
     if($order -notcontains $entry){Fail 'Verification failed: the new entry is not in the Windows Boot Manager displayorder'}
+    if((Get-BootDefault (Invoke-Bcd @('/enum','{bootmgr}','/v'))) -ne $defaultBefore){
+      Fail 'Verification failed: registering an entry changed the boot default'
+    }
     if((Get-BootOrder (Invoke-Bcd @('/enum','{fwbootmgr}')))[0] -ne '{bootmgr}'){
       Fail 'Verification failed: {bootmgr} is no longer the firmware default'
     }
@@ -316,6 +324,7 @@ function Invoke-RegisterManual {
     BackupRoot=$backup
     BootOrderBefore=$orderBefore
     BootTimeoutBefore=$timeoutBefore
+    BootDefaultBefore=$defaultBefore
     HiberbootBefore=$hiberBefore
     UnlockDriveLetter=$Targets.Letter
     UnlockPartitionGuid=$Targets.UnlockGuid
@@ -350,6 +359,13 @@ function Invoke-EnableAutomatic {
 
   $descriptionBefore=Get-BootEntryField $text $entry 'description'
   $hiberBefore=Get-Hiberboot
+  # Every identifier that really exists, so the default writer cannot be handed a dangling one.
+  # bcdedit itself accepts a non-existent identifier as a default, so this list is the guard.
+  $knownIds=Get-BootIdentifiers (Invoke-Bcd @('/enum','all'))
+  $defaultBefore=Get-BootDefault (Invoke-Bcd @('/enum','{bootmgr}','/v'))
+  if($state.PSObject.Properties['BootDefaultBefore'] -and $state.BootDefaultBefore){
+    $defaultBefore=[string]$state.BootDefaultBefore
+  }
   # Long enough that a person can still choose Windows, short enough that an unattended
   # power-on is not waiting on a menu. Zero would remove the only local way back.
   $automaticTimeout=$script:automaticTimeout
@@ -360,6 +376,8 @@ function Invoke-EnableAutomatic {
     BootOrderBefore=$orderBefore
     BootTimeoutBefore=$state.BootTimeoutBefore
     BootTimeoutAutomatic=$automaticTimeout
+    BootDefaultBefore=$defaultBefore
+    BootDefaultAutomatic=$entry
     HiberbootBefore=$hiberBefore
     RestoreCommand='.\Install.ps1 -RestoreWindowsFirst'
     ManualEntryPath='\EFI\WindowsGPUUnlock\MANUAL.EFI'
@@ -372,6 +390,7 @@ function Invoke-EnableAutomatic {
     [pscustomobject]@{Name='entry description -> automatic';Run={[void](Invoke-Bcd @('/set',$entry,'description','Windows GPU UNLOCK Auto'))}}
     [pscustomobject]@{Name='disable Fast Startup';Run={Set-Hiberboot -Value 0}}
     [pscustomobject]@{Name='automatic entry first';Run={Set-BootOrder (@($entry) + @($orderBefore|Where-Object {$_ -ne $entry}))}}
+    [pscustomobject]@{Name='boot default -> automatic entry';Run={Set-BootDefault -Identifier $entry -KnownIdentifiers $knownIds}}
     [pscustomobject]@{Name=('boot menu timeout -> {0}s' -f $automaticTimeout);Run={Set-BootTimeout -Seconds $automaticTimeout}}
   )
   $verify={
@@ -380,16 +399,28 @@ function Invoke-EnableAutomatic {
     if($path -ne '\EFI\WindowsGPUUnlock\AUTO.EFI'){Fail ("Verification failed: entry path is '{0}'" -f $path)}
     $description=Get-BootEntryField $text $entry 'description'
     if($description -ne 'Windows GPU UNLOCK Auto'){Fail ("Verification failed: entry description is '{0}'" -f $description)}
-    $order=Get-BootOrder (Invoke-Bcd @('/enum','{bootmgr}'))
-    if($order[0] -ne $entry){Fail ("Verification failed: the first boot entry is still {0}" -f $order[0])}
-    if(($order -notcontains '{current}') -and ($order -notcontains '{default}')){
+    $orderAliases=Get-BootOrder (Invoke-Bcd @('/enum','{bootmgr}'))
+    # A plain enumeration prints {current}/{default} instead of the identifiers they stand for,
+    # so once an entry becomes the default the first position reads as "{default}" and would
+    # never match our identifier. Positions are therefore compared from a verbose read.
+    $order=Get-BootOrder (Invoke-Bcd @('/enum','{bootmgr}','/v'))
+    if(($orderAliases -notcontains '{current}') -and ($orderAliases -notcontains '{default}')){
       Fail 'Verification failed: the Windows fallback was dropped from the displayorder'
     }
-    $timeout=Get-BootTimeout (Invoke-Bcd @('/enum','{bootmgr}'))
-    if($timeout -ne $automaticTimeout){Fail ("Verification failed: boot timeout is {0}" -f $timeout)}
-    if((Get-Hiberboot) -ne 0){Fail 'Verification failed: Fast Startup is still enabled'}
     if((Get-BootOrder (Invoke-Bcd @('/enum','{fwbootmgr}')))[0] -ne '{bootmgr}'){
       Fail 'Verification failed: {bootmgr} is no longer the firmware default'
+    }
+    # Being first in the menu is not the same as being started: the default entry is what an
+    # unattended power-on runs once the timeout expires. All of it is checked in one place so
+    # no caller can look at the order alone and call the machine armed.
+    $armed=Get-AutomaticArmed -Entry $entry `
+      -Default (Get-BootDefault (Invoke-Bcd @('/enum','{bootmgr}','/v'))) `
+      -Order $order `
+      -Timeout (Get-BootTimeout (Invoke-Bcd @('/enum','{bootmgr}'))) `
+      -Hiberboot (Get-Hiberboot) `
+      -ExpectedTimeout $automaticTimeout
+    if(-not $armed.Armed){
+      Fail ('Verification failed: automatic boot is not armed: ' + ($armed.Reasons -join '; '))
     }
   }
   $rollback=@(
@@ -397,11 +428,14 @@ function Invoke-EnableAutomatic {
     [pscustomobject]@{Name='restore entry description';Run={[void](Invoke-Bcd @('/set',$entry,'description',$descriptionBefore))}}
     [pscustomobject]@{Name='restore Fast Startup';Run={if($null -ne $hiberBefore){Set-Hiberboot -Value ([int]$hiberBefore)}}}
     [pscustomobject]@{Name='restore boot order';Run={Set-BootOrder $orderBefore}}
+    [pscustomobject]@{Name='restore boot default';Run={Set-BootDefault -Identifier $defaultBefore -KnownIdentifiers (Get-BootIdentifiers (Invoke-Bcd @('/enum','all')))}}
     [pscustomobject]@{Name='restore boot timeout';Run={if($null -ne $state.BootTimeoutBefore){Set-BootTimeout -Seconds ([int]$state.BootTimeoutBefore)}}}
   )
   Invoke-AutomaticTransition -Steps $steps -Verify $verify -Rollback $rollback
 
   $state.Mode='promoted-automatic'
+  $state|Add-Member -NotePropertyName BootDefaultBefore -NotePropertyValue $defaultBefore -Force
+  $state|Add-Member -NotePropertyName BootDefaultAutomatic -NotePropertyValue $entry -Force
   $state|Add-Member -NotePropertyName PromotedUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
   $state|ConvertTo-Json -Depth 6|Set-Content -LiteralPath $stateFile -Encoding UTF8
   Write-Host 'Automatic boot is armed. The next power-on unlocks and hands off to Windows with no key.'
@@ -421,7 +455,28 @@ function Invoke-RestoreWindowsFirst {
   # Windows first, everything else (including the unlock entry) kept behind it so the
   # manual test entry stays available and nothing is silently deleted.
   $desired=@('{current}') + @($orderNow|Where-Object {$_ -ne '{current}'})
+  # The default entry is what an unattended power-on actually starts, so recovery has to put
+  # the original one back even if the menu order already looks right.
+  $defaultTarget=$null
+  if($state.PSObject.Properties['BootDefaultBefore'] -and $state.BootDefaultBefore){$defaultTarget=[string]$state.BootDefaultBefore}
+  if(-not $defaultTarget -and $state.BackupRoot){
+    $saved=Join-Path ([string]$state.BackupRoot) 'bootmgr-before.txt'
+    if(Test-Path -LiteralPath $saved){$defaultTarget=Get-BootDefault (Get-Content -Raw -LiteralPath $saved)}
+  }
+  $defaultNow=Get-BootDefault (Invoke-Bcd @('/enum','{bootmgr}','/v'))
+  if(-not $defaultTarget){
+    if($defaultNow -eq $entry){
+      Fail 'Refusing to finish: the unlock entry is still the boot default and no original default was recorded'
+    }
+    $defaultTarget=$defaultNow
+  }
   $actions=@(
+    [pscustomobject]@{Name='restore boot default'
+      Run={
+        if($defaultTarget -ne (Get-BootDefault (Invoke-Bcd @('/enum','{bootmgr}','/v')))){
+          Set-BootDefault -Identifier $defaultTarget -KnownIdentifiers (Get-BootIdentifiers (Invoke-Bcd @('/enum','all')))
+        }
+      }}
     [pscustomobject]@{Name='Windows first';Run={Set-BootOrder $desired}}
     [pscustomobject]@{Name='restore Fast Startup'
       Run={if($null -ne $state.HiberbootBefore){Set-Hiberboot -Value ([int]$state.HiberbootBefore)}}}
@@ -446,6 +501,9 @@ function Invoke-RestoreWindowsFirst {
   }
   $order=Get-BootOrder (Invoke-Bcd @('/enum','{bootmgr}'))
   if($order[0] -ne '{current}'){Fail ("Verification failed: the first boot entry is {0}, not {{current}}" -f $order[0])}
+  if((Get-BootDefault (Invoke-Bcd @('/enum','{bootmgr}','/v'))) -eq $entry){
+    Fail 'Verification failed: the unlock entry is still the boot default'
+  }
   $state.Mode='restored-windows-first'
   $state|Add-Member -NotePropertyName RestoredUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
   $state|ConvertTo-Json -Depth 6|Set-Content -LiteralPath $stateFile -Encoding UTF8
@@ -495,13 +553,27 @@ function Invoke-Readiness {
       }
       $windows=Get-BootOrder (Invoke-Bcd @('/enum','{bootmgr}'))
       $timeout=Get-BootTimeout (Invoke-Bcd @('/enum','{bootmgr}'))
+      $default=Get-BootDefault (Invoke-Bcd @('/enum','{bootmgr}','/v'))
       $notes+=('boot menu order      {0}' -f ($windows -join ' '))
       $notes+=('boot menu timeout    {0}s' -f $timeout)
+      $notes+=('boot menu default    {0}' -f $default)
       if(($windows -notcontains '{current}') -and ($windows -notcontains '{default}')){
         $problems+='The Windows Boot Manager displayorder has no Windows fallback'
       }
       if($null -ne $timeout -and $timeout -eq 0){
         $problems+='The boot menu timeout is 0: there would be no way to pick Windows instead of the unlock'
+      }
+      # Once promoted, "armed" is a property of four things at once, never of menu position.
+      # The order is read verbosely because the default entry otherwise prints as {default}.
+      if(Test-Path -LiteralPath $stateFile){
+        $stateForArm=Get-Content -Raw -LiteralPath $stateFile|ConvertFrom-Json
+        if($stateForArm.Mode -eq 'promoted-automatic'){
+          $orderRaw=Get-BootOrder (Invoke-Bcd @('/enum','{bootmgr}','/v'))
+          $armed=Get-AutomaticArmed -Entry ([string]$stateForArm.EntryId) -Default $default -Order $orderRaw `
+            -Timeout $timeout -Hiberboot (Get-Hiberboot) -ExpectedTimeout $script:automaticTimeout
+          if($armed.Armed){$notes+='automatic armed      yes (default, first entry, timeout and Fast Startup all match)'}
+          else {$problems+=('Automatic boot is registered but not armed: ' + ($armed.Reasons -join '; '))}
+        }
       }
     } catch {$problems+=('Cannot read the boot order: ' + $_.Exception.Message)}
     try {
@@ -557,7 +629,7 @@ function Write-InstallPlan {
   ''
   '-RegisterManual'
   '  backup: bcdedit /export "%ProgramData%\WindowsGPUUnlock\Backups\<stamp>\bcd-export"'
-  '          bcdedit /enum > enum-before.txt; bcdedit /enum {bootmgr} > bootmgr-before.txt'
+  '          bcdedit /enum > enum-before.txt; bcdedit /enum {bootmgr} /v > bootmgr-before.txt'
   '          bcdedit /enum {fwbootmgr} > firmware-before.txt; Get-Partition > partitions-before.txt'
   '  guard:  firmware displayorder[0] must be {bootmgr}; {bootmgr} order must contain {current}'
   '          install\state.json must not exist; {bootmgr} must have no bootsequence'
@@ -565,7 +637,8 @@ function Write-InstallPlan {
   '  bcdedit /set <new> device partition=<letter>:'
   '  bcdedit /set <new> path \EFI\WindowsGPUUnlock\MANUAL.EFI'
   '  bcdedit /set {bootmgr} displayorder {current} <new>'
-  '  verify: <new> has that device/path/description, order[0] is still {current}'
+  '  (the boot default is left alone here: Windows still starts if the menu is ignored)'
+  '  verify: <new> has that device/path/description, order[0] is still {current}, default unchanged'
   '  rollback: bcdedit /set {bootmgr} displayorder <order before>'
   '            then the copied entry is removed: /delete <new> /f'
   ''
@@ -575,17 +648,21 @@ function Write-InstallPlan {
   '  bcdedit /set <entry> path \EFI\WindowsGPUUnlock\AUTO.EFI'
   '  bcdedit /set <entry> description "Windows GPU UNLOCK Auto"'
   '  bcdedit /set {bootmgr} displayorder <entry> {current}'
+  '  bcdedit /set {bootmgr} default <entry>'
   ('  bcdedit /set {{bootmgr}} timeout {0}' -f $automaticTimeout)
   '  reg add <hiberKey> /v HiberbootEnabled /t REG_DWORD /d 0 /f'
-  '  verify: path, description, order[0]=<entry>, {current} still present, timeout, Hiberboot=0'
-  '  rollback: path -> MANUAL.EFI, description -> Manual, order -> previous, timeout -> previous,'
-  '            HiberbootEnabled -> previous'
+  '  verify: path, description, order[0]=<entry>, {current} still present, default=<entry>,'
+  '          timeout, Hiberboot=0 -- all of them together, because the default entry is what'
+  '          an unattended power-on starts and the menu position alone proves nothing'
+  '  rollback: path -> MANUAL.EFI, description -> Manual, order -> previous, default -> previous,'
+  '            timeout -> previous, HiberbootEnabled -> previous'
   ''
   '-RestoreWindowsFirst'
+  '  restore the boot default (BootDefaultBefore, else bootmgr-before.txt, else current)'
   '  set {bootmgr} displayorder to {current} + everything current, unlock entry kept behind it'
   '  restore BootTimeoutBefore; restore HiberbootBefore'
   '  re-point the saved entry at MANUAL.EFI (description Windows GPU UNLOCK Manual)'
-  '  verify order[0] is {current}; nothing is deleted'
+  '  verify order[0] is {current} and the unlock entry is not the default; nothing is deleted'
   ''
   'If the ESP GUIDs above are placeholders the plan is still printable, but the installer'
   'refuses to run: run Configure.ps1 against the real ESP first.'

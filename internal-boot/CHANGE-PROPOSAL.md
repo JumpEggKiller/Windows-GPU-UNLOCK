@@ -4,10 +4,17 @@ This is the change Gate B has to approve before the maintenance window. Everythi
 derived from the current machine state, read only. **Nothing in this document has been applied
 to the live boot configuration.**
 
-- Branch: `local-rig-internal-boot`, HEAD `7ce84a2`
+- Branch: `local-rig-internal-boot`
 - Software evidence: `internal-boot\Test.ps1` → `ALL INTERNAL-BOOT SOFTWARE TESTS PASSED`
 - Staged set on the dedicated ESP: `9 of 9 files match the build`
 - Live store after every test run: unchanged (`bcdedit /enum all` byte-identical)
+
+**Revision note (this version).** An earlier draft of moment 2 changed only `displayorder` and
+`timeout`. Since `{bootmgr} default` was (and still is) `{current}`, an unattended power-on
+would have waited out the 5 s menu and then booted **Windows**, silently skipping the unlock.
+Automatic mode now also sets `default {entry}` and happens; the readback includes the default,
+and "armed" is defined as four fields at once (§2). Nothing about the live boot configuration
+has been changed by this revision.
 
 ## 1. What exists right now (captured, read only)
 
@@ -17,7 +24,7 @@ to the live boot configuration.**
   path            \EFI\MICROSOFT\BOOT\BOOTMGFW.EFI
   description     Windows Boot Manager
   locale          zh-CN
-  default         {current}
+  default         {current}          (= {469011d3-a872-11f1-bb02-ea6b3138fbbe}, the Windows loader)
   displayorder    {current}
   toolsdisplayorder {memdiag}
   timeout         30
@@ -74,7 +81,8 @@ bcdedit /set {bootmgr} displayorder {current} {entry}
 ```
 
 Effect: the Windows menu gains a **second** entry, **behind** Windows. A normal boot is
-unchanged and still boots Windows first after 30 s — the timeout is not touched in this step.
+unchanged and still boots Windows first after 30 s — neither the timeout nor the **default
+entry** is touched in this step, so an unattended boot is bit-for-bit what it was before.
 
 Before writing, the installer refuses to continue unless: it is elevated, Secure Boot is off,
 `C:` is fully decrypted, the firmware default is still `{bootmgr}`, the Windows menu still has
@@ -82,7 +90,8 @@ a Windows fallback, the dedicated ESP still matches its recorded GUID/offset/siz
 mount letter is still `S:`, all four images match their build manifests, all five assets match
 `unlock\assets.json`, and no `install\state.json` exists yet. It first writes
 `%ProgramData%\WindowsGPUUnlock\Backups\<stamp>\` with a full `bcdedit /export`, `enum-before.txt`,
-`bootmgr-before.txt`, `firmware-before.txt` and the partition map.
+`bootmgr-before.txt` (verbose, so the real default identifier is in it), `firmware-before.txt`
+and the partition map.
 
 ### Moment 2 — Gate D, arm automatic boot (only after Gate C passed by hand)
 
@@ -96,14 +105,46 @@ Writes this and nothing else:
 bcdedit /set {entry} path \EFI\WindowsGPUUnlock\AUTO.EFI
 bcdedit /set {entry} description "Windows GPU UNLOCK Auto"
 bcdedit /set {bootmgr} displayorder {entry} {current}
+bcdedit /set {bootmgr} default {entry}     <- this is what actually starts the unlock
 bcdedit /set {bootmgr} timeout 5
 HiberbootEnabled = 0                       (saved value: 1)
 ```
 
+**Why the default line is the important one.** `displayorder` only orders the *menu*.
+What the boot manager starts on its own is its **default** entry, and until this fix the
+default was `{current}` (Windows). With a 5 s timeout and the unlock entry merely first in the
+menu, an untouched power-on waited 5 s and then booted **Windows**, skipping the unlock
+entirely — the bug this revision fixes. Automatic boot is therefore now defined as *four things
+at once*:
+
+| condition | required value |
+|---|---|
+| `{bootmgr}` `default` | the unlock `{entry}` |
+| `{bootmgr}` `displayorder` first | the unlock `{entry}` |
+| `{bootmgr}` `timeout` | `5` |
+| `HiberbootEnabled` (Fast Startup) | `0` |
+
+`Get-AutomaticArmed` is the single predicate that checks all four, and it is used by the
+promotion verification, by `-Check`, and by the host tests — including a regression that proves
+"entry first in the menu, default still Windows" reports **not armed**. `-Check` prints both
+`boot menu order` and `boot menu default`, so a review can see the two are different things.
+The promotion refuses to finish (and rolls everything back) if any of the four is wrong, and
+`{bootmgr}` itself is never accepted as the default: `Set-BootDefault` only takes a concrete
+entry identifier that already exists in the store, and reads the value back to prove it stuck.
+
+Legality was not assumed. On a scratch copy of the store, `bcdedit /store <hive> /set {bootmgr}
+default <copied-entry>` succeeded and `/enum {bootmgr} /v` read the copy back, so a
+`{bootmgr}`-copied application entry **can** be the default; `install\rehearse-bcd.ps1` repeats
+that proof on every run. The same probe also showed bcdedit accepts a default that does *not*
+exist, which is why the policy validates the identifier itself instead of trusting bcdedit.
+
 Effect: the machine cold-boots into the unlock image after a 5-second menu window, runs the
 three-card transaction, starts `bootmgfw.efi` **without a reset**, and Windows comes up. If
-nobody touches the keyboard nothing is required; if a human presses Esc or waits, or picks the
-first entry, Windows boots untouched.
+nobody touches the keyboard nothing is required. If a human wants Windows instead, press any
+key during the window and choose the Windows entry, or simply **wait 5 s and then press Esc at
+the unlock image's own cancel window** (the child waits 3 s for Esc before doing anything, and
+the wrapper waits 5 s before starting Windows) — the image then starts Windows without
+unlocking. Two independent human escape hatches, no tooling.
 
 The 5 s timeout is deliberate and is **not** allowed to be 0: `{current}` stays in the order, so
 there is always a local, no-tooling way to boot Windows. `Set-BootTimeout` refuses 0 and
@@ -127,9 +168,12 @@ anything above 3600, and reads the value back to prove it stuck.
    ```powershell
    .\Install.ps1 -RestoreWindowsFirst
    ```
-   Restores `displayorder` so `{current}` is first, restores the saved menu timeout (30 s) and
-   the saved Fast Startup value (1), re-points the created entry back at `MANUAL.EFI`, verifies
-   `order[0] is {current}`. It deletes nothing and needs no working EFI image.
+   Restores the **boot default** first (from `BootDefaultBefore`, else from the verbose
+   `bootmgr-before.txt` backup, else leaves the current one only if it is not the unlock entry),
+   then `displayorder` so `{current}` is first, the saved menu timeout (30 s) and the saved Fast
+   Startup value (1), re-points the created entry back at `MANUAL.EFI`, and verifies both
+   `order[0] is {current}` and **`the unlock entry is not the boot default`** — otherwise it
+   fails loudly. It deletes nothing and needs no working EFI image.
 3. **Full removal** (only if the experiment is abandoned): `-RestoreWindowsFirst`, then remove the
    created entry (`bcdedit /delete {entry} /f` — recorded in `install\state.json`), then delete
    `S:\EFI\WindowsGPUUnlock` and `S:\RTX3090-UNLOCK`, then optionally
@@ -159,10 +203,16 @@ hides the first failure.
 
 | gate | action | pass criterion |
 |---|---|---|
-| B | review this document, `-Check`, `-Plan`, `install\rehearse-bcd.ps1` | reviewer accepts; `-Check` READY; rehearsal 14/14 |
-| C | moment 1, restart, pick **Windows GPU UNLOCK Manual** by hand | console: `internal-handoff-v1`, three cards `unlocked=1 retained=1 clean=1`, `FINAL(multi) status=0`, Windows **without reset**; then `nvidia-smi` 3 cards `OK`, driver 617.42, no code 43 |
-| D | moment 2, one real cold boot, hands off | menu 5 s → auto unlock → Windows; same three-card evidence; `S:\RTX3090-UNLOCK\BOOTnn.TXT` exists |
-| E | second cold boot | identical; plus pull the keyboard/USB and confirm it still boots; then `-RestoreWindowsFirst` and confirm Windows-first works |
+| B | review this document, `-Check`, `-Plan`, `install\rehearse-bcd.ps1` | reviewer accepts; `-Check` READY; rehearsal 18/18; all four commands PASS |
+| C | moment 1, then a **full shutdown and power-on** (not a restart), wait for the Windows boot menu and pick **Windows GPU UNLOCK Manual** by hand | console: `internal-handoff-v1`, three cards `unlocked=1 retained=1 clean=1`, `FINAL(multi) status=0`, Windows **without reset**; then `nvidia-smi` 3 cards `OK`, driver 617.42, no code 43 |
+| D | moment 2, one real cold boot, hands off | menu 5 s → auto unlock → Windows; same three-card evidence; `S:\RTX3090-UNLOCK\BOOTnn.TXT` exists; `-Check` says `automatic armed yes` |
+| E | second cold boot | identical; plus unplug the keyboard and USB and confirm it still boots; then `-RestoreWindowsFirst` and confirm `boot menu default` is the Windows loader again and Windows-first works |
+
+**Gate C uses a real power cycle, not `shutdown /r`.** A restart can carry a Fast Startup /
+firmware warm-boot path that never re-runs the firmware boot manager the way a cold power-on
+does, and the unlock is volatile anyway: only a full power-off + power-on reproduces the path
+that Gate D will depend on. So: shut down completely, switch off at the PSU if convenient, wait,
+power on, then pick the entry by hand.
 
 ## 7. Known blocker for Gate D (not a code defect)
 
@@ -183,9 +233,9 @@ production change (add a trigger that writes `{"action":"restore"}` for `sup_tas
 |---|---|
 | software suite (6 sections) | `internal-boot\Test.ps1` |
 | wrapper host tests (device path, flow, record) | `internal-boot\boot\test_*.c` via `boot\run-tests.ps1` |
-| installer policy, 24 checks | `internal-boot\install\test-automatic-policy.ps1` |
-| plan is read-only, 7 checks | `internal-boot\install\test-plan.ps1` |
-| whole change on a scratch hive, 14 checks | `internal-boot\install\rehearse-bcd.ps1` |
+| installer policy, 34 checks | `internal-boot\install\test-automatic-policy.ps1` |
+| plan is read-only, 8 checks | `internal-boot\install\test-plan.ps1` |
+| whole change on a scratch hive, 18 checks | `internal-boot\install\rehearse-bcd.ps1` |
 | staged set fault injection, 7 checks | `internal-boot\install\test-staged.ps1` |
 | source audit | `internal-boot\boot\audit.ps1` |
 | build report + hashes | `internal-boot\build\build-report.json` |

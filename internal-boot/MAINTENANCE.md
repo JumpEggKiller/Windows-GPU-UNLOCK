@@ -174,13 +174,24 @@ or `Staged file is older than the build: …`; re-run the staging command above 
 
 ```powershell
 .\Install.ps1 -RegisterManual      # backs up BCD, copies {bootmgr}, adds the copy behind Windows
-Restart-Computer
 ```
-At the Windows menu pick **Windows GPU UNLOCK Manual**. Expected console sequence: the
-wrapper banner, `internal-handoff-v1`, the child banner, the 3-second auto cancel window,
-three cards unlocked, `HANDOFF.ST` accepted, then bootmgfw starts and Windows comes up
-without a reset. Then confirm in Windows: four RTX nodes, driver 617.42, no Code 43, and
-the Strata launcher restored.
+This does **not** touch `default` or `timeout`: after it, an unattended boot is exactly what it
+was before. `-Check` should still print `boot menu default {469011d3-…}` (the Windows loader).
+
+Then a real power cycle — **not** `shutdown /r`:
+
+```powershell
+shutdown /s /t 0        # or switch the machine off at the PSU and back on
+```
+
+A warm restart can follow a firmware/Fast-Startup path that never presents the boot menu the way
+a cold power-on does, and the unlock is volatile anyway, so Gate C has to rehearse the exact
+cold path Gate D depends on. At the Windows menu pick **Windows GPU UNLOCK Manual**. Expected
+console sequence: the wrapper banner, `internal-handoff-v1`, the child banner, the 3-second auto
+cancel window, three cards unlocked, `HANDOFF.ST` accepted, then bootmgfw starts and Windows
+comes up without a reset. Then confirm in Windows: four RTX nodes, driver 617.42, no Code 43,
+and (`Get-Partition`/`nvidia-smi` as usual) that Strata's state is whatever §"Blocking item for
+Gate D" says it is.
 
 If anything fails: the wrapper stops and prints the reason; power-cycle, choose the first
 menu entry (Windows), then run `.\Install.ps1 -RestoreWindowsFirst`.
@@ -189,16 +200,25 @@ menu entry (Windows), then run `.\Install.ps1 -RestoreWindowsFirst`.
 
 ```powershell
 .\Install.ps1 -EnableAutomaticBoot -ConfirmedManualSuccess
+.\Install.ps1 -Check      # must say: automatic armed yes, boot menu default <the unlock entry>
 ```
-This sets the menu timeout to 5 s, arms `AUTO.EFI` first, and turns Fast Startup off.
+This sets `default` to the unlock entry, puts it first in the menu, sets the menu timeout to 5 s
+and turns Fast Startup off. All four are required and are verified read-back; if any of them
+fails the whole promotion is rolled back. **`default` is the field that decides what an
+untouched power-on starts** — menu position alone does not, which is exactly the defect this
+step exists to avoid.
+
 Then: full power-off → power-on with no keyboard, and repeat once more for repeatability.
-Five-second escape hatch on every boot: press Esc (or wait) and choose Windows.
+Two independent human escape hatches on every boot: press a key inside the 5-second Windows menu
+and pick the Windows entry, or let the unlock image start and press Esc inside its own 3-second
+window (it then starts Windows without unlocking anything).
+
 
 ## Rollback, in one command each
 
 | state | command |
 | --- | --- |
-| automatic armed | `.\Install.ps1 -RestoreWindowsFirst` (Windows first, manual entry kept) |
+| automatic armed | `.\Install.ps1 -RestoreWindowsFirst` (restores the boot default, Windows first, manual entry kept) |
 | manual entry unwanted | `bcdedit /delete <EntryId> /f` after `-RestoreWindowsFirst` |
 | ESP files unwanted | delete `EFI\WindowsGPUUnlock\` and `RTX3090-UNLOCK\` on `S:` |
 | partition A created | `Remove-Partition -DiskNumber N -PartitionNumber M`, then `Resize-Partition` back |

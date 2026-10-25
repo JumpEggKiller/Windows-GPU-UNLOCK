@@ -161,6 +161,14 @@ Need 'Install.ps1' $install 'Set-BootTimeout -Seconds'
 Need 'Install.ps1' $install 'BootTimeoutBefore'
 Need 'Install.ps1' $install "Mode='restored-windows-first'"
 Need 'Install.ps1' $install 'boot menu timeout'
+# Automatic boot must move the boot default, record the original one, and prove the restored
+# default is not our entry. An install that only reorders the menu boots Windows unattended.
+Need 'Install.ps1' $install 'boot default -> automatic entry'
+Need 'Install.ps1' $install 'Set-BootDefault -Identifier $entry'
+Need 'Install.ps1' $install 'BootDefaultBefore'
+Need 'Install.ps1' $install 'the unlock entry is still the boot default'
+Need 'Install.ps1' $install 'Get-AutomaticArmed'
+Need 'Install.ps1' $install 'boot menu default'
 # -Plan must stay the first thing main does and must never reach a write.
 Need 'Install.ps1' $install 'function Write-InstallPlan'
 Need 'Install.ps1' $install 'if($Plan){Write-InstallPlan;return}'
@@ -183,6 +191,15 @@ Need 'automatic-policy.ps1' $policy 'Boot timeout did not stick'
 Need 'automatic-policy.ps1' $policy 'Refusing an unreasonable boot timeout'
 Need 'automatic-policy.ps1' $policy 'function Assert-OrderKeepsWindows'
 Need 'automatic-policy.ps1' $policy 'if($null -ne $current){[void]$blocks.Add($current);$current=$null}'
+# The default entry is what an unattended boot starts; it needs its own reader, a writer that
+# refuses dangling identifiers, and one predicate that never looks at menu position alone.
+Need 'automatic-policy.ps1' $policy 'function Get-BootDefault'
+Need 'automatic-policy.ps1' $policy 'function Set-BootDefault'
+Need 'automatic-policy.ps1' $policy 'Refusing to set a default that is not in the store'
+Need 'automatic-policy.ps1' $policy 'Boot default did not stick'
+Need 'automatic-policy.ps1' $policy 'function Get-AutomaticArmed'
+Need 'automatic-policy.ps1' $policy 'the boot default is {0}, not the unlock entry'
+Need 'test-automatic-policy.ps1' (Read-Source 'internal-boot\install\test-automatic-policy.ps1') 'being first in the menu is not enough to be armed'
 
 # The rehearsal must only ever write to a scratch hive under the temp directory, and it
 # must prove the live store was read-only by comparing it before and after.
@@ -192,6 +209,8 @@ Need 'rehearse-bcd.ps1' $rehearsal "'/store'"
 Need 'rehearse-bcd.ps1' $rehearsal 'function Assert-SandboxedStore'
 Need 'rehearse-bcd.ps1' $rehearsal 'the live boot store is untouched'
 Need 'rehearse-bcd.ps1' $rehearsal 'That is the live store'
+Need 'rehearse-bcd.ps1' $rehearsal 'a copied entry can legally become the boot default'
+Need 'rehearse-bcd.ps1' $rehearsal 'not enough to be armed'
 Forbid 'rehearse-bcd.ps1' $rehearsal "bcdedit @('/set'"
 Forbid 'rehearse-bcd.ps1' $rehearsal "bcdedit @('/copy'"
 

@@ -89,6 +89,9 @@ try {
   $state.Store = $storeFile
   $state.EnumBefore = (Offline @('/enum','all')).Text
   $state.WindowsAlias = (Get-BootOrder (Offline @('/enum', '{bootmgr}')).Text)[0]
+  # The default entry is what an unattended power-on starts. Read it verbosely so this is a raw
+  # identifier, not the {current}/{default} alias that a plain enumeration prints.
+  $state.DefaultBefore = Get-BootDefault (Offline @('/enum','{bootmgr}','/v')).Text
 
   Check 'the copy reports a Windows entry to keep in the menu' {
     if (-not $state.WindowsAlias) { throw 'the copy lists no displayorder' }
@@ -139,22 +142,72 @@ try {
     if (($order -join ',') -ne ($state.WindowsAlias + ',' + $state.NewId)) { throw ('order is ' + ($order -join ',')) }
   }
 
+  # --- the boot default -----------------------------------------------------
+  Check 'the copy records which entry an unattended boot starts today' {
+    if ($state.DefaultBefore -notmatch '^\{[0-9a-f-]{36}\}$') { throw ('default is not an identifier: ' + $state.DefaultBefore) }
+    if ($state.DefaultBefore -eq $state.NewId) { throw 'the copy already starts our entry' }
+  }
+
+  Check 'a copied entry can legally become the boot default' {
+    # This is the decisive legality question for automatic boot: bcdedit must accept our entry
+    # as {bootmgr} default and keep it. It is written with raw bcdedit here because the policy
+    # writer Set-BootDefault talks to the live store; this is the copy.
+    $result = Offline @('/set', '{bootmgr}', 'default', $state.NewId)
+    if ($result.Exit -ne 0) { throw ('bcdedit refused our entry as the default: ' + $result.Text) }
+    $readBack = Get-BootDefault (Offline @('/enum','{bootmgr}','/v')).Text
+    if ($readBack -ne $state.NewId) { throw ('default did not stick: ' + $readBack) }
+  }
+
+  Check 'the policy refuses a default that is not in the store' {
+    # bcdedit accepts a default that does not exist, so the policy guard is the only defence.
+    try {
+      Set-BootDefault -Identifier '{11111111-2222-3333-4444-555555555555}' -KnownIdentifiers @($state.DefaultBefore)
+      throw 'the policy accepted a default that is not in the store'
+    } catch {
+      if ($_.Exception.Message -notmatch 'not in the store') { throw }
+    }
+  }
+
+  Check 'a short timeout and first place are not enough to be armed' {
+    # The exact defect this rehearsal guards against, using the order promotion is about to
+    # write: our entry first, a 5 s timeout, Fast Startup off -- and Windows still starting,
+    # because the default entry never moved.
+    $promotedOrder = @($state.NewId, $state.WindowsAlias)
+    $armedButNotDefault = Get-AutomaticArmed -Entry $state.NewId -Default $state.DefaultBefore -Order $promotedOrder -Timeout 5 -Hiberboot 0 -ExpectedTimeout 5
+    if ($armedButNotDefault.Armed) { throw 'the machine was called armed while the default entry was still Windows' }
+    if (($armedButNotDefault.Reasons -join '; ') -match 'first menu entry|displayorder') {
+      throw 'the default was not the reported reason, so the predicate still leans on menu position'
+    }
+    $armedWithDefault = Get-AutomaticArmed -Entry $state.NewId -Default $state.NewId -Order $promotedOrder -Timeout 5 -Hiberboot 0 -ExpectedTimeout 5
+    if (-not $armedWithDefault.Armed) { throw ('not armed even with the default moved: ' + ($armedWithDefault.Reasons -join '; ')) }
+    # Put the default back so the promotion check below proves the real write.
+    $result = Offline @('/set', '{bootmgr}', 'default', $state.DefaultBefore)
+    if ($result.Exit -ne 0) { throw ('could not restore the default: ' + $result.Text) }
+  }
+
   # --- promotion ------------------------------------------------------------
   Check 'promotion puts the entry first and keeps Windows in the menu' {
     foreach ($args in @(
         @('/set', $state.NewId, 'path', '\EFI\WindowsGPUUnlock\AUTO.EFI'),
         @('/set', $state.NewId, 'description', 'Windows GPU UNLOCK Auto'),
         @('/set', '{bootmgr}', 'displayorder', $state.NewId, $state.WindowsAlias),
+        @('/set', '{bootmgr}', 'default', $state.NewId),
         @('/set', '{bootmgr}', 'timeout', '5'))) {
       $result = Offline $args
       if ($result.Exit -ne 0) { throw ('{0} failed: {1}' -f ($args -join ' '), $result.Text) }
     }
-    $order = Get-BootOrder (Offline @('/enum', '{bootmgr}')).Text
+    # Verbose: once our entry is the default a plain enumeration prints it as {default}, which
+    # would never equal the identifier we are looking for.
+    $order = Get-BootOrder (Offline @('/enum', '{bootmgr}', '/v')).Text
     if ($order[0] -ne $state.NewId) { throw ('first entry is ' + $order[0]) }
-    if ($order -notcontains $state.WindowsAlias) { throw 'Windows fell out of the menu' }
+    if ($order -notcontains $state.DefaultBefore) { throw 'Windows fell out of the menu' }
     $timeout = Get-BootTimeout (Offline @('/enum', '{bootmgr}')).Text
     if ($timeout -ne 5) { throw ('timeout is ' + $timeout) }
+    $default = Get-BootDefault (Offline @('/enum','{bootmgr}','/v')).Text
+    if ($default -ne $state.NewId) { throw ('default is ' + $default) }
     Need (Offline @('/enum', $state.NewId)).Text '\EFI\WindowsGPUUnlock\AUTO.EFI'
+    $armed = Get-AutomaticArmed -Entry $state.NewId -Default $default -Order $order -Timeout $timeout -Hiberboot 0 -ExpectedTimeout 5
+    if (-not $armed.Armed) { throw ('promotion did not arm: ' + ($armed.Reasons -join '; ')) }
   }
 
   # --- fault injection ------------------------------------------------------
@@ -194,20 +247,25 @@ try {
 
   # --- recovery -------------------------------------------------------------
   Check 'the restore sequence puts Windows first and keeps the unlock entry' {
-    $order = Get-BootOrder (Offline @('/enum', '{bootmgr}')).Text
-    $desired = @($state.WindowsAlias) + @($order | Where-Object { $_ -ne $state.WindowsAlias })
+    $order = Get-BootOrder (Offline @('/enum', '{bootmgr}', '/v')).Text
+    # The restore writes the Windows identifier first and keeps everything else behind it.
+    $desired = @($state.DefaultBefore) + @($order | Where-Object { $_ -ne $state.DefaultBefore })
     foreach ($args in @(
         (@('/set', '{bootmgr}', 'displayorder') + $desired),
+        @('/set', '{bootmgr}', 'default', $state.DefaultBefore),
         @('/set', '{bootmgr}', 'timeout', '30'),
         @('/set', $state.NewId, 'path', '\EFI\WindowsGPUUnlock\MANUAL.EFI'),
         @('/set', $state.NewId, 'description', 'Windows GPU UNLOCK Manual'))) {
       $result = Offline $args
       if ($result.Exit -ne 0) { throw ('{0} failed: {1}' -f ($args -join ' '), $result.Text) }
     }
-    $restored = Get-BootOrder (Offline @('/enum', '{bootmgr}')).Text
-    if ($restored[0] -ne $state.WindowsAlias) { throw ('first entry is ' + $restored[0]) }
+    $restored = Get-BootOrder (Offline @('/enum', '{bootmgr}', '/v')).Text
+    if ($restored[0] -ne $state.DefaultBefore) { throw ('first entry is ' + $restored[0]) }
     if ($restored -notcontains $state.NewId) { throw 'the unlock entry was lost' }
     if ((Get-BootTimeout (Offline @('/enum', '{bootmgr}')).Text) -ne 30) { throw 'timeout did not come back' }
+    $default = Get-BootDefault (Offline @('/enum','{bootmgr}','/v')).Text
+    if ($default -ne $state.DefaultBefore) { throw ('the default was not restored: ' + $default) }
+    if ($default -eq $state.NewId) { throw 'the unlock entry is still what an unattended boot would start' }
     Need (Offline @('/enum', $state.NewId)).Text '\EFI\WindowsGPUUnlock\MANUAL.EFI'
   }
 
@@ -218,6 +276,8 @@ try {
     if ($text.ToLowerInvariant().Contains($state.NewId)) { throw 'the entry is still listed' }
     Need $text '{bootmgr}'
     Need $text $state.WindowsAlias
+    $default = Get-BootDefault (Offline @('/enum','{bootmgr}','/v')).Text
+    if ($default -ne $state.DefaultBefore) { throw ('deleting the entry moved the default to ' + $default) }
   }
 
   Check 'the live boot store is untouched' {
@@ -236,4 +296,5 @@ if ($failures.Count -gt 0) {
 }
 Write-Host ('PASS boot entry rehearsal: registration, promotion, fault injection and recovery on a scratch hive ({0} offline calls, {1} live reads, all read-only)' -f $state.OfflineCalls,$state.LiveReads)
 exit 0
+
 
