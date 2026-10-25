@@ -72,6 +72,12 @@ function Get-EspPartitions {
   })
 }
 
+# MSFT_Partition.Guid already carries its braces; normalise instead of wrapping again.
+function Format-PartitionGuid([string]$Text) {
+  $bare=([string]$Text).Trim().Trim('{','}')
+  return ('{' + $bare.ToLowerInvariant() + '}')
+}
+
 function Get-VolumeOf($Partition) {
   $volume=$Partition|Get-Volume -ErrorAction SilentlyContinue
   if($null -eq $volume){throw ("Partition {0} on disk {1} has no volume" -f $Partition.PartitionNumber,$Partition.DiskNumber)}
@@ -88,10 +94,12 @@ function Resolve-ConfiguredPartitions {
   if($windows.Count -ne 1){Fail ("Expected exactly one system ESP, found {0}" -f $windows.Count)}
   $windows=$windows[0]
   $windowsVolume=Get-VolumeOf $windows
-  if((([string]$windowsVolume.DriveLetter)+':') -ne $env:SystemDrive){
-    Write-Warning ("The system ESP volume is {0}, not {1}" -f $windowsVolume.DriveLetter,$env:SystemDrive)
+  # A dedicated ESP normally has no drive letter at all; only a letter that hijacks the
+  # system drive is worth a warning.
+  if($windowsVolume.DriveLetter -and ((([string]$windowsVolume.DriveLetter)+':') -ne $env:SystemDrive)){
+    Write-Warning ("The system ESP is mounted as {0}: the Windows boot files live there" -f $windowsVolume.DriveLetter)
   }
-  $windowsGuid=(('{{{0}}}' -f $windows.PartitionGuid)).ToLowerInvariant()
+  $windowsGuid=Format-PartitionGuid $windows.Guid
   if($windowsGuid -ne ([string]$config.WindowsPartitionGuid).ToLowerInvariant()){
     Fail ("The configured Windows ESP {0} is not the system ESP {1}" -f $config.WindowsPartitionGuid,$windowsGuid)
   }
@@ -102,7 +110,7 @@ function Resolve-ConfiguredPartitions {
   })
   if($unlock.Count -ne 1){Fail ("The configured unlock ESP is no longer at offset {0} on disk {1}" -f $config.UnlockOffset,$config.UnlockDiskNumber)}
   $unlock=$unlock[0]
-  $unlockGuid=(('{{{0}}}' -f $unlock.PartitionGuid)).ToLowerInvariant()
+  $unlockGuid=Format-PartitionGuid $unlock.Guid
   if($unlockGuid -ne ([string]$config.UnlockPartitionGuid).ToLowerInvariant()){
     Fail ("The partition at the configured offset has GUID {0}, not {1}: the disk changed" -f $unlockGuid,$config.UnlockPartitionGuid)
   }
@@ -634,4 +642,5 @@ if($mode.Count -eq 0) {
 }
 if($mode -contains 'register'){Invoke-RegisterManual -Targets $targets -Files $files;return}
 if($mode -contains 'promote'){Invoke-EnableAutomatic -Targets $targets;return}
+
 

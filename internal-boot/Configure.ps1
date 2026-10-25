@@ -28,7 +28,8 @@ try {
   $tail=@()
   for($i=0;$i -lt 4;$i+=2){$tail+=[Convert]::ToByte($Matches[4].Substring($i,2),16)}
   for($i=0;$i -lt 12;$i+=2){$tail+=[Convert]::ToByte($Matches[5].Substring($i,2),16)}
-  '{0x{0:x8},0x{1:x4},0x{2:x4},{{{3}}}' -f ([Convert]::ToUInt32($Matches[1],16)),([Convert]::ToUInt16($Matches[2],16)),([Convert]::ToUInt16($Matches[3],16)),(($tail | ForEach-Object {'0x{0:x2}' -f $_}) -join ',')
+  # {{ and }} are literal braces: the result is {0x........,0x....,0x....,{b,b,...}}
+  '{{0x{0:x8},0x{1:x4},0x{2:x4},{{{3}}}}}' -f ([Convert]::ToUInt32($Matches[1],16)),([Convert]::ToUInt16($Matches[2],16)),([Convert]::ToUInt16($Matches[3],16)),(($tail | ForEach-Object {'0x{0:x2}' -f $_}) -join ',')
  }
  function ZeroGuid([string]$Text) { $Text -match '^\{?0{8}-0{4}-0{4}-0{4}-0{12}\}?$' }
 
@@ -107,7 +108,9 @@ try {
      $UnlockDriveLetter,$p.GptType,$p.IsSystem,$p.SizeGB,$p.FileSystem,$p.Guid)
   }
   $unlock=$unlock[0]
-  if($unlock.Guid -ne [string]$WindowsEspGuid) {
+  # Compare the argument with the Windows ESP, not with the unlock partition: the two are
+  # different partitions and confusing them made every real run throw "does not match".
+  if($windowsEsp[0].Guid -ne [string]$WindowsEspGuid) {
    throw ('-WindowsEspGuid {0} does not match the IsSystem ESP on disk ({1})' -f $WindowsEspGuid,$windowsEsp[0].Guid)
   }
   $board=BoardReport

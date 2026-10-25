@@ -14,13 +14,29 @@ been executed against this machine yet: the only writes ever made were into
 - `Install.ps1 -Check` — only blocker is the placeholder ESP GUIDs.
 - `Install.ps1 -LocalStage` — the exact ESP file tree, hashes verified, no disk written.
 
-## Step 0 — choose the dedicated ESP (needs a decision before anything else)
+## Step 0 — the dedicated ESP (DONE: option A was created and staged)
 
-The window must begin with a partition decision, because `Configure.ps1` bakes the
-partition GUID into the wrapper. No mechanical disk is involved: this machine has SSD space
-that needs no resize at all.
+Option A was executed on 2026-10-25 after the operator chose it. The dedicated ESP now
 
-**A. Disk 4, in space that is already free (recommended).** `tigo SSD 1TB`, SATA SSD, GPT,
+- is **disk 4 partition 2**, GUID `{7c5be0d5-fa43-46bb-932b-940e31f725ed}`, GPT type
+  `{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}`, 1.50 GiB, FAT32 label `GPUUNLOCK`, mounted `S:`;
+- occupies the free tail at offset 996,928,389,120 that the `tigo SSD 1TB` already had, so
+  **nothing was resized, moved or deleted**; disk 4 partition 1 (the Linux filesystem at
+  offset 1,048,576) is byte-for-byte unchanged;
+- holds the nine staged files, hashes verified on the volume itself.
+
+`Configure.ps1` was pinned against it (`boot\platform-config.h`, `local-config.json`,
+`Placeholder=false`), `Build.ps1` rebuilt all four images with those GUIDs baked in, and
+`Install.ps1 -Check` reports `READY: every prerequisite passed. Nothing was written.`
+No BCD or boot-order change has been made: `bcdedit /enum all` is unchanged.
+
+Rollback if the ESP is ever unwanted: delete `EFI\WindowsGPUUnlock\` and
+`RTX3090-UNLOCK\` on `S:`, then `Remove-Partition -DiskNumber 4 -PartitionNumber 2`; the
+space returns to exactly the state it was in before.
+
+The alternatives, kept for reference if a differently placed ESP is ever preferred:
+
+**A. Disk 4, in space that is already free (what was used).** `tigo SSD 1TB`, SATA SSD, GPT,
 931.5 GB with **3.05 GB unallocated at the end of the disk**. Its only partition is a Linux
 filesystem (`0fc63daf-8483-4772-8e79-3d69d8477de4`) that Windows cannot even mount; creating
 a partition in the trailing free extent moves nothing, shrinks nothing and touches nothing:
@@ -94,6 +110,11 @@ treat "Strata restored" as a pure reboot test until that config difference is ex
 
 ## Step 1 — pin, build, prove (still no boot configuration change)
 
+**Already done** against the real ESP on 2026-10-25: `Configure.ps1` pinned
+`S:` / `{7c5be0d5-fa43-46bb-932b-940e31f725ed}` / `{ade68b7e-ced7-408a-b149-027482c08207}`,
+`Build.ps1` produced the installable set below, and `-Check` is READY. The commands are kept
+here for a rebuild (a BIOS update or a new ESP invalidates the pin):
+
 ```powershell
 cd D:\AI\dsh-local\gpu-unlock-audit\Windows-GPU-UNLOCK\internal-boot
 .\Configure.ps1 -UnlockDriveLetter S -WindowsEspGuid '{ade68b7e-ced7-408a-b149-027482c08207}'
@@ -112,8 +133,9 @@ Gate A/B exit criterion: `-Check` prints "Ready to install" with the real GUIDs,
 ```powershell
 .\Install.ps1 -Assets D:\AI\dsh-local\gpu-unlock-audit\usb-staging\RTX3090-UNLOCK\ASSETS
 ```
-Ends with `Files staged only. Boot order unchanged.` `bcdedit /enum {bootmgr}` must still
-show `displayorder {current}` afterwards.
+**Already done**: `Staged 9 files into S:\ (dedicated ESP {7c5be0d5-…})` /
+`Files staged only. Boot order unchanged.`, BCD verified unchanged. Re-running it is safe
+(it refuses to overwrite a different file) — do it again if the images are rebuilt.
 
 ## Step 3 — Gate C: register the manual entry and test it by hand
 
