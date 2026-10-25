@@ -3,6 +3,7 @@
 # deletes a partition, never changes encryption, and never reboots.
 #
 #   .\Install.ps1 -Check                        readiness report; writes nothing
+#   .\Install.ps1 -Plan                         the exact commands each action would run; writes nothing
 #   .\Install.ps1 -LocalStage <dir>             stage the exact file tree into a folder
 #   .\Install.ps1 -Assets <dir>                 stage onto the dedicated ESP only
 #   .\Install.ps1 -Assets <dir> -RegisterManual  add the Manual entry, Windows stays first
@@ -16,11 +17,14 @@ param(
   [switch]$ConfirmedManualSuccess,
   [switch]$RestoreWindowsFirst,
   [switch]$Check,
+  [switch]$Plan,
   [string]$LocalStage
 )
 $ErrorActionPreference='Stop'
 $espType='{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}'
 $hiberKey='HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power'
+# One constant, so the printed plan and the command that runs cannot drift apart.
+$automaticTimeout=5
 $root=$PSScriptRoot
 $repo=Split-Path -Parent $root
 $stateFile=Join-Path $root 'install\state.json'
@@ -341,7 +345,7 @@ function Invoke-EnableAutomatic {
   $hiberBefore=Get-Hiberboot
   # Long enough that a person can still choose Windows, short enough that an unattended
   # power-on is not waiting on a menu. Zero would remove the only local way back.
-  $automaticTimeout=5
+  $automaticTimeout=$script:automaticTimeout
   $planPath=Join-Path $state.BackupRoot 'recovery-plan.json'
   [ordered]@{
     CreatedUtc=[DateTime]::UtcNow.ToString('o')
@@ -504,6 +508,73 @@ function Invoke-Readiness {
   return 0
 }
 
+# Prints the exact commands each action would run, with the values this machine would use.
+# It exists so Gate B can be reviewed from one screen: nothing here reads boot state and
+# nothing here writes anything.
+function Write-InstallPlan {
+  $config=$null
+  if(Test-Path -LiteralPath $configFile) {
+    try { $config=Get-Content -Raw -LiteralPath $configFile|ConvertFrom-Json } catch { $config=$null }
+  }
+  $letter='<unresolved>'
+  $unlockGuid='<unresolved>'
+  $windowsGuid='<unresolved>'
+  $placeholder=$true
+  if($config) {
+    $placeholder=[bool]$config.Placeholder
+    if($config.UnlockDriveLetter){$letter=[string]$config.UnlockDriveLetter}
+    if($config.UnlockPartitionGuid){$unlockGuid=[string]$config.UnlockPartitionGuid}
+    if($config.WindowsPartitionGuid){$windowsGuid=[string]$config.WindowsPartitionGuid}
+  }
+  'PLAN ONLY: the commands below were printed, not executed.'
+  ''
+  'configuration'
+  ('  unlock ESP          {0}  (partition={1}:)' -f $unlockGuid,$letter)
+  ('  Windows ESP         {0}' -f $windowsGuid)
+  ('  placeholder         {0}' -f $placeholder)
+  ('  boot menu timeout   {0}s for automatic boot' -f $automaticTimeout)
+  ''
+  'stage (no action, or before any of the below)'
+  ('  copy -> {0}:\EFI\WindowsGPUUnlock\{{UNLOCK.EFI,UNLOCK-AUTO.EFI,MANUAL.EFI,AUTO.EFI}}' -f $letter)
+  ('  copy -> {0}:\RTX3090-UNLOCK\ASSETS\{{five firmware assets}}' -f $letter)
+  '  bcdedit /enum {bootmgr}   (must still show displayorder {current} afterwards)'
+  ''
+  '-RegisterManual'
+  '  backup: bcdedit /export "%ProgramData%\WindowsGPUUnlock\Backups\<stamp>\bcd-export"'
+  '          bcdedit /enum > enum-before.txt; bcdedit /enum {bootmgr} > bootmgr-before.txt'
+  '          bcdedit /enum {fwbootmgr} > firmware-before.txt; Get-Partition > partitions-before.txt'
+  '  guard:  firmware displayorder[0] must be {bootmgr}; {bootmgr} order must contain {current}'
+  '          install\state.json must not exist; {bootmgr} must have no bootsequence'
+  '  bcdedit /copy {bootmgr} /d "Windows GPU UNLOCK Manual"'
+  '  bcdedit /set <new> device partition=<letter>:'
+  '  bcdedit /set <new> path \EFI\WindowsGPUUnlock\MANUAL.EFI'
+  '  bcdedit /set {bootmgr} displayorder {current} <new>'
+  '  verify: <new> has that device/path/description, order[0] is still {current}'
+  '  rollback: bcdedit /set {bootmgr} displayorder <order before>'
+  '            then the copied entry is removed: /delete <new> /f'
+  ''
+  '-EnableAutomaticBoot -ConfirmedManualSuccess'
+  '  guard:  state Mode=registered-manual; entry still on partition=<letter>: with the manual path'
+  '          firmware displayorder[0] is still {bootmgr}'
+  '  bcdedit /set <entry> path \EFI\WindowsGPUUnlock\AUTO.EFI'
+  '  bcdedit /set <entry> description "Windows GPU UNLOCK Auto"'
+  '  bcdedit /set {bootmgr} displayorder <entry> {current}'
+  ('  bcdedit /set {{bootmgr}} timeout {0}' -f $automaticTimeout)
+  '  reg add <hiberKey> /v HiberbootEnabled /t REG_DWORD /d 0 /f'
+  '  verify: path, description, order[0]=<entry>, {current} still present, timeout, Hiberboot=0'
+  '  rollback: path -> MANUAL.EFI, description -> Manual, order -> previous, timeout -> previous,'
+  '            HiberbootEnabled -> previous'
+  ''
+  '-RestoreWindowsFirst'
+  '  set {bootmgr} displayorder to {current} + everything current, unlock entry kept behind it'
+  '  restore BootTimeoutBefore; restore HiberbootBefore'
+  '  re-point the saved entry at MANUAL.EFI (description Windows GPU UNLOCK Manual)'
+  '  verify order[0] is {current}; nothing is deleted'
+  ''
+  'If the ESP GUIDs above are placeholders the plan is still printable, but the installer'
+  'refuses to run: run Configure.ps1 against the real ESP first.'
+}
+
 # --- main -------------------------------------------------------------------
 
 $mode=@()
@@ -513,6 +584,10 @@ if($RegisterManual){$mode+='register'}
 if($EnableAutomaticBoot){$mode+='promote'}
 if($RestoreWindowsFirst){$mode+='restore'}
 if($mode.Count -gt 1){Fail ('Choose one action, not: ' + ($mode -join ', '))}
+
+# -Plan is deliberately the first thing main does: it reads the configuration file and
+# prints, so no artifact check, no partition resolution and no write can happen first.
+if($Plan){Write-InstallPlan;return}
 
 $script:StagedBytes=0
 if($mode.Count -eq 0 -or $mode -contains 'check' -or $mode -contains 'localstage') {

@@ -9,7 +9,7 @@ been executed against this machine yet: the only writes ever made were into
 - `unlock\run-local-tests.ps1` — ALL RUNNABLE GROUPS PASSED (includes the 82-check
   multi-target arming suite and the GPU0-disallowed audit).
 - `internal-boot\Test.ps1` — ALL INTERNAL-BOOT SOFTWARE TESTS PASSED: host tests, 24
-  installer-policy checks, source audit, and the child suite above.
+  installer-policy checks, 7 read-only plan checks, source audit, and the child suite above.
 - `internal-boot\Build.ps1` — four artifacts, bit-identical across rebuilds, PE verified.
 - `Install.ps1 -Check` — only blocker is the placeholder ESP GUIDs.
 - `Install.ps1 -LocalStage` — the exact ESP file tree, hashes verified, no disk written.
@@ -61,6 +61,37 @@ installation is modified or deleted, but the partition is shared.
 The mechanical disks (`ST2000DM005`, `ST3000VX000`, `WD40PURX`, `WD1002FAEX`) have no free
 extent at all and would each need a resize; none of them is a candidate.
 
+## Blocking item for Gate D: Strata does not start by itself
+
+Verified read-only on 2026-10-25. Gate D asks for "Strata restored by the existing production
+launcher" after an unattended boot, and that launcher is not wired to start anything:
+
+- `Strata-Nofill-Cutover` (the task that runs
+  `strata0441-nofill-backport\swap\sup_task.ps1`) has **no triggers**. Its own description
+  says "on demand, no triggers, interactive user".
+- `Strata-Parking-Restore` is **Disabled**.
+- No Run-key and no Startup-folder entry for Strata exists (only `WavesLocalServer.lnk`).
+
+So after a cold boot Windows comes up with no Strata process and nothing listening on 18144.
+That is a production state, not a defect of this port, and fixing it means adding a trigger
+that writes `{"action":"restore"}` into `swap\results\sup_request.json` and then runs the
+task — a change to the production launcher that needs its own approval. Until then Gate D can
+be judged on "three cards unlocked, driver healthy, Windows booted without a reset" and Strata
+must be restored by hand with the documented supervisor:
+
+```powershell
+# after the boot, from a normal shell (the supervisor must run under Task Scheduler;
+# a restore launched from a background job is cancelled with its children)
+schtasks /run /tn 'Strata-Nofill-Cutover'   # only if it is given a trigger or run manually
+```
+
+Two further facts the window will need: the production binary
+`strata-256k-parking\engine-nofill\strata.exe` matches its recorded hash
+`1EF387260972F579AE42C6D7D3650872FBF2B607D53DB5A2157EDA1D5C731A4B`, but
+`configs\PROD_0441_IQ4XS_256K_PARKING.json` has **drifted** from the cutover record (expected
+`D5A7E5A9…4265E`, actual `D6E5D66E…AF04`), and port 18144 has no listener right now. Do not
+treat "Strata restored" as a pure reboot test until that config difference is explained.
+
 ## Step 1 — pin, build, prove (still no boot configuration change)
 
 ```powershell
@@ -70,6 +101,7 @@ cd D:\AI\dsh-local\gpu-unlock-audit\Windows-GPU-UNLOCK\internal-boot
              -LldLink ..\..\tools\clang+llvm-23.1.4-x86_64-pc-windows-msvc\bin\lld-link.exe `
              -Python  C:\Users\micasa\AppData\Local\Programs\Python\Python314\python.exe
 .\Install.ps1 -Check
+.\Install.ps1 -Plan
 ```
 
 Gate A/B exit criterion: `-Check` prints "Ready to install" with the real GUIDs, no

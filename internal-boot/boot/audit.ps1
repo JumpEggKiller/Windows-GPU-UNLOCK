@@ -161,6 +161,19 @@ Need 'Install.ps1' $install 'Set-BootTimeout -Seconds'
 Need 'Install.ps1' $install 'BootTimeoutBefore'
 Need 'Install.ps1' $install "Mode='restored-windows-first'"
 Need 'Install.ps1' $install 'boot menu timeout'
+# -Plan must stay the first thing main does and must never reach a write.
+Need 'Install.ps1' $install 'function Write-InstallPlan'
+Need 'Install.ps1' $install 'if($Plan){Write-InstallPlan;return}'
+Need 'Install.ps1' $install 'PLAN ONLY: the commands below were printed, not executed.'
+
+$planTests = Read-Source 'internal-boot\install\test-plan.ps1'
+Need 'test-plan.ps1' $planTests 'the plan never writes the boot store or the partition table'
+# It may read the boot store (that is how it proves nothing changed) but must never write
+# one: only -enum, never a mutating verb.
+Forbid 'test-plan.ps1' $planTests "'/set'"
+Forbid 'test-plan.ps1' $planTests "'/copy'"
+Forbid 'test-plan.ps1' $planTests "'/delete'"
+Forbid 'test-plan.ps1' $planTests 'Invoke-Bcd'
 
 $policy = Read-Source 'internal-boot\install\automatic-policy.ps1'
 Need 'automatic-policy.ps1' $policy 'that removes the Windows fallback'

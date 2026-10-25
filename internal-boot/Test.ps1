@@ -36,6 +36,15 @@ try {
   [void]$failed.Add('installer boot policy')
 }
 
+Section 'internal-boot host tests: installer plan is read-only'
+try {
+  & (Join-Path $here 'install\test-plan.ps1')
+  if ($LASTEXITCODE -ne 0) { [void]$failed.Add('installer plan') }
+} catch {
+  Write-Host ('FAIL installer plan: {0}' -f $_.Exception.Message)
+  [void]$failed.Add('installer plan')
+}
+
 Section 'internal-boot source audit'
 try {
   & (Join-Path $here 'boot\audit.ps1')

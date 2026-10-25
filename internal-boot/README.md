@@ -88,6 +88,9 @@ Every command is read-only until `-RegisterManual`. Nothing reboots, ever.
 # 3. prove the whole thing is safe to install (writes nothing)
 .\Install.ps1 -Check
 
+# 3b. read the entire boot-configuration change before approving it (writes nothing)
+.\Install.ps1 -Plan
+
 # 4. inspect the exact file tree before installing it anywhere
 .\Install.ps1 -LocalStage D:\stage -Assets <dir with the five firmware assets>
 
@@ -103,6 +106,11 @@ Every command is read-only until `-RegisterManual`. Nothing reboots, ever.
 
 `-Development` writes placeholder GUIDs so the build pipeline can be exercised without a
 real ESP. A build made that way announces itself on the console and `-Check` blocks it.
+
+`-Plan` prints every command the later steps would run, with the values this machine would
+use, and touches nothing at all: `install\test-plan.ps1` compares the BCD store and the
+partition table before and after to prove it. It exists so the change can be reviewed without
+running any of it.
 
 ## Recovery
 
