@@ -112,6 +112,13 @@ use, and touches nothing at all: `install\test-plan.ps1` compares the BCD store 
 partition table before and after to prove it. It exists so the change can be reviewed without
 running any of it.
 
+`install\rehearse-bcd.ps1` goes one step further: it exports the live store into a scratch
+hive under `%TEMP%` and runs the *whole* change against that copy with real `bcdedit` —
+copy, attribute, point at the ESP, place behind Windows, promote, restore, delete — including
+three injected faults, then re-exports the live store and proves it is byte-identical. The
+commands are therefore proven, not just printed, and the live boot configuration is still
+untouched.
+
 ## Recovery
 
 ```powershell
@@ -157,13 +164,15 @@ effort and the file log as authoritative.
 
 Runs the wrapper's host tests (device-path policy, handoff flow fault injection,
 end-of-batch record policy), the installer's boot-policy tests against recorded
-`bcdedit` output, and the unlock child's own suite.
+`bcdedit` output, the installer plan test, the boot-store rehearsal, the source audit, and
+the unlock child's own suite.
 
 ## Status
 
-Software side complete: both layers build reproducibly, every host suite passes, and the
-installer's readiness check passes every prerequisite it can see without a real
-configured ESP. **Hardware-unverified**: no build from this tree has been booted on the
-rig yet, the automatic path has never been started by real firmware, and
-`platform-config.h` currently holds placeholder GUIDs. Physical acceptance (manual
-selection, then one cold boot, then a second cold boot) is the remaining step.
+Software side complete: both layers build reproducibly, every host suite passes, the
+installed set was pinned to the real dedicated ESP (`S:`, `{7c5be0d5-…}`) and staged onto it,
+and `-Check` reports READY with no blocked prerequisite. **Hardware-unverified**: no build
+from this tree has been booted on the rig yet and the automatic path has never been started
+by real firmware. Physical acceptance (manual selection, then one cold boot, then a second
+cold boot) is the remaining step, and it needs the maintenance window because registering
+the boot entry writes the live boot store.

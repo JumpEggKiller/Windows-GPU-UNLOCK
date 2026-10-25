@@ -17,27 +17,35 @@ function Get-BootEntryBlocks([string]$Text) {
   if([string]::IsNullOrWhiteSpace($Text)){throw 'Empty boot enumeration'}
   $blocks=New-Object System.Collections.ArrayList
   $current=$null
-  $close={ if($null -ne $current){[void]$blocks.Add($current);$current=$null} }
+  # Every close is written out instead of living in a helper script block. A script block
+  # invoked with `&` runs in a child scope, so a `$current=$null` inside it would clear only
+  # the child's copy and the same entry would be added again at the next close. That made
+  # `bcdedit /enum all` (57 blocks, 19 real entries) attribute three copies of one entry.
   foreach($line in ($Text -split "`r?`n")) {
-    if($line -match '^\s*identifier\s+(\{[0-9a-zA-Z-]+\})\s*$') {
-      & $close
-      $current=[ordered]@{Identifier=$Matches[1].ToLowerInvariant();Lines=New-Object System.Collections.ArrayList}
+    $identifier=$null
+    if($line -match '^\s*identifier\s+(\{[0-9a-zA-Z-]+\})\s*$'){$identifier=$Matches[1].ToLowerInvariant()}
+    $isUnderline=($line -match '^-{3,}\s*$')
+    $isBlank=[string]::IsNullOrWhiteSpace($line)
+    $isField=(($line -match '^\w+\s{2,}\S') -or ($line -match '^\s{2,}\S'))
+    if($null -ne $identifier) {
+      if($null -ne $current){[void]$blocks.Add($current)}
+      $current=[ordered]@{Identifier=$identifier;Lines=New-Object System.Collections.ArrayList}
       [void]$current.Lines.Add($line.Trim())
-    } elseif($line -match '^-{3,}\s*$') {
+    } elseif($isUnderline) {
       # The underline ends the previous entry's block.
-      & $close
-    } elseif([string]::IsNullOrWhiteSpace($line)) {
+      if($null -ne $current){[void]$blocks.Add($current);$current=$null}
+    } elseif($isBlank) {
       if($null -ne $current){[void]$current.Lines.Add('')}
-    } elseif($line -match '^\w+\s{2,}\S' -or $line -match '^\s{2,}\S') {
+    } elseif($isField) {
       # A field line or a continuation of one.
       if($null -ne $current){[void]$current.Lines.Add($line.TrimEnd())}
     } else {
       # A title such as `Windows Boot Manager` introduces the next entry, so it closes
       # this block instead of being compared as if it were one of this entry's fields.
-      & $close
+      if($null -ne $current){[void]$blocks.Add($current);$current=$null}
     }
   }
-  & $close
+  if($null -ne $current){[void]$blocks.Add($current)}
   if($blocks.Count -eq 0){throw 'Boot enumeration contains no identifier'}
   return $blocks
 }

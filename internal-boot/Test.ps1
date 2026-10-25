@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
   [string]$Clang = 'clang',
   [string]$Python = 'python'
@@ -45,6 +45,15 @@ try {
   [void]$failed.Add('installer plan')
 }
 
+Section 'internal-boot host tests: whole change rehearsed on a scratch boot store'
+try {
+  & (Join-Path $here 'install\rehearse-bcd.ps1')
+  if ($LASTEXITCODE -ne 0) { [void]$failed.Add('boot store rehearsal') }
+} catch {
+  Write-Host ('FAIL boot store rehearsal: {0}' -f $_.Exception.Message)
+  [void]$failed.Add('boot store rehearsal')
+}
+
 Section 'internal-boot source audit'
 try {
   & (Join-Path $here 'boot\audit.ps1')
@@ -72,3 +81,4 @@ if ($failed.Count -gt 0) {
 }
 Write-Host 'ALL INTERNAL-BOOT SOFTWARE TESTS PASSED'
 exit 0
+

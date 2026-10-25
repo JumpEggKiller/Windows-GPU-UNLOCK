@@ -182,6 +182,18 @@ Need 'automatic-policy.ps1' $policy 'Write-Output -NoEnumerate $ids'
 Need 'automatic-policy.ps1' $policy 'Boot timeout did not stick'
 Need 'automatic-policy.ps1' $policy 'Refusing an unreasonable boot timeout'
 Need 'automatic-policy.ps1' $policy 'function Assert-OrderKeepsWindows'
+Need 'automatic-policy.ps1' $policy 'if($null -ne $current){[void]$blocks.Add($current);$current=$null}'
+
+# The rehearsal must only ever write to a scratch hive under the temp directory, and it
+# must prove the live store was read-only by comparing it before and after.
+$rehearsal = Read-Source 'internal-boot\install\rehearse-bcd.ps1'
+Need 'rehearse-bcd.ps1' $rehearsal 'bcdedit /export'
+Need 'rehearse-bcd.ps1' $rehearsal "'/store'"
+Need 'rehearse-bcd.ps1' $rehearsal 'function Assert-SandboxedStore'
+Need 'rehearse-bcd.ps1' $rehearsal 'the live boot store is untouched'
+Need 'rehearse-bcd.ps1' $rehearsal 'That is the live store'
+Forbid 'rehearse-bcd.ps1' $rehearsal "bcdedit @('/set'"
+Forbid 'rehearse-bcd.ps1' $rehearsal "bcdedit @('/copy'"
 # A test must never write firmware state: the guard is proved through its own function.
 $policyTests = Read-Source 'internal-boot\install\test-automatic-policy.ps1'
 Forbid 'test-automatic-policy.ps1' $policyTests 'Set-BootOrder @('

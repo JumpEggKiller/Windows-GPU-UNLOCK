@@ -128,6 +128,29 @@ cd D:\AI\dsh-local\gpu-unlock-audit\Windows-GPU-UNLOCK\internal-boot
 Gate A/B exit criterion: `-Check` prints "Ready to install" with the real GUIDs, no
 `BLOCKED` section, and the four artifact hashes match `build\build-report.json`.
 
+### Step 1b — rehearse the whole boot-configuration change, still without touching it
+
+```powershell
+cd D:\AI\dsh-local\gpu-unlock-audit\Windows-GPU-UNLOCK\internal-boot
+.\install\rehearse-bcd.ps1
+```
+
+This exports the live store to a scratch hive under `%TEMP%` and runs the entire sequence
+against the copy with real `bcdedit`: `/copy {bootmgr}`, attribute exactly one new entry,
+device → `partition=S:`, path → `MANUAL.EFI`, push it behind Windows, promote it (`AUTO.EFI`,
+description, `timeout 5`), then restore Windows first, then delete the entry again. It also
+injects three faults (an order without the Windows fallback, a write to a
+non-existent identifier, two simultaneous copies) and finally re-exports the live store and
+compares it byte for byte. Expected tail:
+
+```
+PASS boot entry rehearsal: registration, promotion, fault injection and recovery on a
+scratch hive (33 offline calls, 2 live reads, all read-only)
+```
+
+Only `/store` calls write, every one of them to the temp hive; the two live calls are
+`/enum`. `-Check` afterwards must still print `boot menu order {current}` / `timeout 30s`.
+
 ## Step 2 — stage onto the dedicated ESP only
 
 ```powershell
