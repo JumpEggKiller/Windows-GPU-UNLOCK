@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
   [string]$Clang = 'clang',
   [string]$Python = 'python'
@@ -52,6 +52,15 @@ try {
 } catch {
   Write-Host ('FAIL boot store rehearsal: {0}' -f $_.Exception.Message)
   [void]$failed.Add('boot store rehearsal')
+}
+
+Section 'internal-boot host tests: what is already staged on the ESP'
+try {
+  & (Join-Path $here 'install\test-staged.ps1')
+  if ($LASTEXITCODE -ne 0) { [void]$failed.Add('staged set') }
+} catch {
+  Write-Host ('FAIL staged set: {0}' -f $_.Exception.Message)
+  [void]$failed.Add('staged set')
 }
 
 Section 'internal-boot source audit'

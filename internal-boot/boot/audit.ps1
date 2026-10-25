@@ -194,6 +194,20 @@ Need 'rehearse-bcd.ps1' $rehearsal 'the live boot store is untouched'
 Need 'rehearse-bcd.ps1' $rehearsal 'That is the live store'
 Forbid 'rehearse-bcd.ps1' $rehearsal "bcdedit @('/set'"
 Forbid 'rehearse-bcd.ps1' $rehearsal "bcdedit @('/copy'"
+
+# -Check must prove what is already on the ESP is what would be built now, so a stale stage
+# cannot survive into Gate C behind a correct-looking build.
+Need 'Install.ps1' $install 'staged on the ESP'
+Need 'Install.ps1' $install ". (Join-Path `$root 'install\staged-set.ps1')"
+# The comparison lives in the shared file so the host test exercises the same code.
+$stagedLib = Read-Source 'internal-boot\install\staged-set.ps1'
+Need 'staged-set.ps1' $stagedLib 'function Get-StagedStatus'
+Need 'staged-set.ps1' $stagedLib 'Staged file is older than the build'
+Need 'staged-set.ps1' $stagedLib 'Asset not staged'
+$stagedTests = Read-Source 'internal-boot\install\test-staged.ps1'
+Need 'test-staged.ps1' $stagedTests 'a stale or missing file on the ESP is always reported'
+Forbid 'test-staged.ps1' $stagedTests 'UnlockDriveLetter'
+Forbid 'test-staged.ps1' $stagedTests 'Get-Partition'
 # A test must never write firmware state: the guard is proved through its own function.
 $policyTests = Read-Source 'internal-boot\install\test-automatic-policy.ps1'
 Forbid 'test-automatic-policy.ps1' $policyTests 'Set-BootOrder @('

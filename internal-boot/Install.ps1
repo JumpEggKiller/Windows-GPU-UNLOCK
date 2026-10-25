@@ -30,6 +30,7 @@ $repo=Split-Path -Parent $root
 $stateFile=Join-Path $root 'install\state.json'
 $configFile=Join-Path $root 'local-config.json'
 . (Join-Path $root 'install\automatic-policy.ps1')
+. (Join-Path $root 'install\staged-set.ps1')
 
 function Fail([string]$Message){throw $Message}
 
@@ -61,8 +62,6 @@ function Set-Hiberboot {
   [void](New-ItemProperty -LiteralPath $hiberKey -Name 'HiberbootEnabled' -Value $Value -PropertyType DWord -Force)
   if((Get-Hiberboot) -ne $Value){throw ("Hiberboot restoration failed: asked for {0}, read back {1}" -f $Value,(Get-Hiberboot))}
 }
-
-function Get-Sha256([string]$Path){return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()}
 
 # --- partitions and volumes -------------------------------------------------
 
@@ -477,6 +476,15 @@ function Invoke-Readiness {
     else {$problems+=('bootmgfw.efi is missing at {0}: the handoff would have nothing to start' -f $bootmgfw)}
     $foreign=Join-Path $targets.WindowsVolume.Path 'EFI\WindowsGPUUnlock'
     if(Test-Path -LiteralPath $foreign){$problems+=('The Windows ESP already contains EFI\WindowsGPUUnlock at {0}; this experiment must stay on the dedicated ESP' -f $foreign)}
+    # What is already on the ESP must match what would be built now. A stale stage would make
+    # Gate C boot an older image while every build-side hash still looked correct.
+    $assetSpec=@()
+    try {
+      $assetSpec=Get-Content -Raw -LiteralPath (Join-Path $repo 'unlock\assets.json')|ConvertFrom-Json
+    } catch {$problems+=('Cannot read the asset manifest: ' + $_.Exception.Message)}
+    $staged=Get-StagedStatus -Root $targets.UnlockVolume.Path -Files $Files -AssetSpec @($assetSpec)
+    foreach($problem in $staged.Problems){$problems+=$problem}
+    $notes+=('staged on the ESP    {0} of {1} files match the build' -f $staged.Ok,$staged.Total)
   }
   if(Test-IsAdmin) {
     try {
@@ -642,5 +650,6 @@ if($mode.Count -eq 0) {
 }
 if($mode -contains 'register'){Invoke-RegisterManual -Targets $targets -Files $files;return}
 if($mode -contains 'promote'){Invoke-EnableAutomatic -Targets $targets;return}
+
 
 

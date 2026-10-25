@@ -160,6 +160,16 @@ Only `/store` calls write, every one of them to the temp hive; the two live call
 `Files staged only. Boot order unchanged.`, BCD verified unchanged. Re-running it is safe
 (it refuses to overwrite a different file) — do it again if the images are rebuilt.
 
+`-Check` now also compares every staged file against the build and the asset manifest, so a
+rebuilt image that was not re-staged is caught here instead of at Gate C:
+
+```
+  staged on the ESP    9 of 9 files match the build
+```
+
+Anything less than `9 of 9` appears under `BLOCKED` as `Not staged on the dedicated ESP: …`
+or `Staged file is older than the build: …`; re-run the staging command above and check again.
+
 ## Step 3 — Gate C: register the manual entry and test it by hand
 
 ```powershell
