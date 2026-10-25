@@ -52,8 +52,24 @@ clean == eligible`. A rig that lost a card and unlocked only what it found is re
 - a **separate** FAT32 ESP of at least 1 GiB, not the Windows ESP, mountable as a letter
 - Secure Boot off
 - `C:` fully decrypted with BitLocker protection off (the installer never changes this)
-- the firmware boot order still has `{bootmgr}` first before anything is registered
+- the firmware order still has `{bootmgr}` first, and the Windows Boot Manager menu keeps
+  `{current}` with a non-zero timeout, before anything is registered
 - `..\deps\edk2` present, LLVM/clang + lld-link on hand, Python 3
+
+## Where the entry goes
+
+The unlock image becomes an **application entry inside the Windows Boot Manager's own
+menu** — the same mechanism `{memdiag}` uses: `bcdedit /copy {bootmgr}`, then
+`device partition=<dedicated ESP>:` and `path \EFI\WindowsGPUUnlock\MANUAL.EFI`.
+
+This is deliberate. `bcdedit /set {fwbootmgr} displayorder …` can only reorder NVRAM
+entries the firmware itself created; Windows has no supported way to create a firmware
+entry for a file on an arbitrary partition. The Windows menu route needs no NVRAM write,
+is reversed by ordinary `bcdedit` commands, and — because `{current}` stays in the order
+and the timeout is set to five seconds for automatic boot — leaves a local window in which
+a person can still choose Windows without any tooling. The firmware order is only
+*checked*: if `{bootmgr}` is not first, the Windows menu is never reached and the
+installer refuses to arm. A zero timeout is refused for the same reason.
 
 ## Install sequence
 
@@ -94,16 +110,22 @@ real ESP. A build made that way announces itself on the console and `-Check` blo
 .\Install.ps1 -RestoreWindowsFirst
 ```
 
-Restores `{bootmgr}` to the front of the firmware order and the saved Fast Startup value,
-and re-points the created entry at the manual image. It needs no working EFI image and no
-matching entry name, and deletes nothing. The installer also writes
+Restores the Windows Boot Manager menu to `{current}` first (the created entry is kept
+behind it so the manual test entry survives), restores the saved menu timeout and Fast
+Startup value, and re-points the created entry at the manual image. It needs no working EFI
+image and no matching entry name, and deletes nothing. The installer also writes
 `recovery-plan.json` next to every BCD backup in
-`%ProgramData%\WindowsGPUUnlock\Backups\<timestamp>\`, together with the firmware order,
-the full BCD export and the partition map from before the change.
+`%ProgramData%\WindowsGPUUnlock\Backups\<timestamp>\`, together with `enum-before.txt`,
+`bootmgr-before.txt`, `firmware-before.txt`, the full BCD export and the partition map from
+before the change.
+
+Five-second path with no tooling at all: power-cycle, let the Windows menu appear, press Esc
+(or wait for the five-second timeout) and choose the first entry, which is Windows. Both the
+menu and the firmware order keep Windows available on purpose.
 
 If a boot fails, the wrapper stops and prints what to do; it never retries, never resets
-and never forces Windows. Power-cycle and pick Windows from the firmware boot menu, then
-run `-RestoreWindowsFirst`.
+and never forces Windows. Power-cycle and pick Windows from the boot menu, then run
+`-RestoreWindowsFirst` to put the menu back the way it was.
 
 ## Logs (dedicated ESP)
 

@@ -38,7 +38,7 @@ function Invoke-Bcd {
   return $text
 }
 
-# Get-FirmwareOrder and Set-FirmwareOrder live in install/automatic-policy.ps1, which
+# Get-BootOrder and Set-BootOrder live in install/automatic-policy.ps1, which
 # is dot-sourced above, so the order rules are shared with their host tests.
 
 function Test-IsAdmin {
@@ -231,6 +231,7 @@ function New-BootBackup {
   New-Item -ItemType Directory -Path $target -Force|Out-Null
   [void](Invoke-Bcd @('/export',(Join-Path $target 'bcd-export')))
   (Invoke-Bcd @('/enum'))|Set-Content -LiteralPath (Join-Path $target 'enum-before.txt') -Encoding UTF8
+  (Invoke-Bcd @('/enum','{bootmgr}'))|Set-Content -LiteralPath (Join-Path $target 'bootmgr-before.txt') -Encoding UTF8
   (Invoke-Bcd @('/enum','{fwbootmgr}'))|Set-Content -LiteralPath (Join-Path $target 'firmware-before.txt') -Encoding UTF8
   (Get-Partition|Format-Table -AutoSize|Out-String -Width 200)|Set-Content -LiteralPath (Join-Path $target 'partitions-before.txt') -Encoding UTF8
   Write-Host ("BCD and partition state backed up to {0}" -f $target)
@@ -252,15 +253,23 @@ function Invoke-RegisterManual {
   param($Targets,[object[]]$Files)
   if(Test-Path -LiteralPath $stateFile){Fail 'An install state already exists; use its recovery procedure (-RestoreWindowsFirst) before registering again'}
   $before=Invoke-Bcd @('/enum')
-  $orderBefore=Get-FirmwareOrder (Invoke-Bcd @('/enum','{fwbootmgr}'))
-  if($orderBefore[0] -ne '{bootmgr}'){
-    Fail ("Current firmware default is {0}, not {{bootmgr}}. Restore Windows-first boot before registering" -f $orderBefore[0])
+  # Two orders matter and they are different things. The firmware order decides whether
+  # {bootmgr} runs at all; the Windows Boot Manager's own order decides what it starts.
+  # The new entry lives in the second one, so both are read, checked and backed up.
+  $firmware=Get-BootOrder (Invoke-Bcd @('/enum','{fwbootmgr}'))
+  if($firmware[0] -ne '{bootmgr}'){
+    Fail ("Firmware default is {0}, not {{bootmgr}}: this install would never run. Restore Windows-first boot first" -f $firmware[0])
+  }
+  $orderBefore=Get-BootOrder (Invoke-Bcd @('/enum','{bootmgr}'))
+  if(($orderBefore -notcontains '{current}') -and ($orderBefore -notcontains '{default}')){
+    Fail 'The Windows Boot Manager displayorder has no Windows fallback; refusing to add an entry beside nothing'
   }
   if($before -match '(?mi)^\s*bootsequence\s'){
     Fail 'The Windows Boot Manager has a bootsequence override; clear it first so the sequence is honest'
   }
 
   $hiberBefore=Get-Hiberboot
+  $timeoutBefore=Get-BootTimeout (Invoke-Bcd @('/enum','{bootmgr}'))
   $backup=New-BootBackup
   $description='Windows GPU UNLOCK Manual'
   [void](Invoke-Bcd @('/copy','{bootmgr}','/d',$description))
@@ -270,17 +279,20 @@ function Invoke-RegisterManual {
   $steps=@(
     [pscustomobject]@{Name=('entry device -> {0}:' -f $Targets.Letter);Run={[void](Invoke-Bcd @('/set',$entry,'device',('partition=' + $Targets.Letter + ':')))}}
     [pscustomobject]@{Name='entry path -> manual handoff';Run={[void](Invoke-Bcd @('/set',$entry,'path','\EFI\WindowsGPUUnlock\MANUAL.EFI'))}}
-    [pscustomobject]@{Name='displayorder append';Run={Set-FirmwareOrder (@($orderBefore) + $entry)}}
+    [pscustomobject]@{Name='displayorder append';Run={Set-BootOrder (@($orderBefore) + $entry)}}
   )
   $verify={
     $text=Invoke-Bcd @('/enum')
     Assert-ManualEntryUsable -Text $text -Identifier $entry -DriveLetter $Targets.Letter
-    $order=Get-FirmwareOrder (Invoke-Bcd @('/enum','{fwbootmgr}'))
-    if($order[0] -ne '{bootmgr}'){Fail 'Verification failed: {bootmgr} is no longer first after registering'}
-    if($order -notcontains $entry){Fail 'Verification failed: the new entry is not in the firmware displayorder'}
+    $order=Get-BootOrder (Invoke-Bcd @('/enum','{bootmgr}'))
+    if($order[0] -ne $orderBefore[0]){Fail ("Verification failed: the first menu entry changed from {0} to {1}" -f $orderBefore[0],$order[0])}
+    if($order -notcontains $entry){Fail 'Verification failed: the new entry is not in the Windows Boot Manager displayorder'}
+    if((Get-BootOrder (Invoke-Bcd @('/enum','{fwbootmgr}')))[0] -ne '{bootmgr}'){
+      Fail 'Verification failed: {bootmgr} is no longer the firmware default'
+    }
   }
   $rollback=@(
-    [pscustomobject]@{Name='restore displayorder';Run={Set-FirmwareOrder $orderBefore}}
+    [pscustomobject]@{Name='restore displayorder';Run={Set-BootOrder $orderBefore}}
     [pscustomobject]@{Name='delete the new entry';Run={[void](Invoke-Bcd @('/delete',$entry,'/f'))}}
   )
   Invoke-AutomaticTransition -Steps $steps -Verify $verify -Rollback $rollback
@@ -292,6 +304,7 @@ function Invoke-RegisterManual {
     EntryDescription=$description
     BackupRoot=$backup
     BootOrderBefore=$orderBefore
+    BootTimeoutBefore=$timeoutBefore
     HiberbootBefore=$hiberBefore
     UnlockDriveLetter=$Targets.Letter
     UnlockPartitionGuid=$Targets.UnlockGuid
@@ -300,7 +313,8 @@ function Invoke-RegisterManual {
     StagedFiles=@($Files|ForEach-Object {[ordered]@{Relative=$_.Relative;Sha256=$_.Sha256;Bytes=$_.Bytes}})
   }
   $state|ConvertTo-Json -Depth 6|Set-Content -LiteralPath $stateFile -Encoding UTF8
-  Write-Host ('Registered {0} as "{1}". Windows is still first; select the entry from the firmware boot menu to test it.' -f $entry,$description)
+  Write-Host ('Registered {0} as "{1}".' -f $entry,$description)
+  Write-Host 'Windows is still the first boot menu entry: restart and pick the unlock entry by hand to test it.'
 }
 
 function Invoke-EnableAutomatic {
@@ -317,27 +331,37 @@ function Invoke-EnableAutomatic {
   $text=Invoke-Bcd @('/enum')
   if($null -eq (Get-BootEntryBlock $text $entry)){Fail 'The registered entry no longer exists'}
   Assert-ManualEntryUsable -Text $text -Identifier $entry -DriveLetter $Targets.Letter
-  $orderBefore=Get-FirmwareOrder (Invoke-Bcd @('/enum','{fwbootmgr}'))
-  if($orderBefore -notcontains $entry){Fail 'The registered entry is not in the firmware displayorder'}
+  $orderBefore=Get-BootOrder (Invoke-Bcd @('/enum','{bootmgr}'))
+  if($orderBefore -notcontains $entry){Fail 'The registered entry is not in the Windows Boot Manager displayorder'}
+  if((Get-BootOrder (Invoke-Bcd @('/enum','{fwbootmgr}')))[0] -ne '{bootmgr}'){
+    Fail 'The firmware default is no longer {bootmgr}: arming the Windows menu would never be reached'
+  }
 
   $descriptionBefore=Get-BootEntryField $text $entry 'description'
   $hiberBefore=Get-Hiberboot
+  # Long enough that a person can still choose Windows, short enough that an unattended
+  # power-on is not waiting on a menu. Zero would remove the only local way back.
+  $automaticTimeout=5
   $planPath=Join-Path $state.BackupRoot 'recovery-plan.json'
   [ordered]@{
     CreatedUtc=[DateTime]::UtcNow.ToString('o')
     EntryId=$entry
     BootOrderBefore=$orderBefore
+    BootTimeoutBefore=$state.BootTimeoutBefore
+    BootTimeoutAutomatic=$automaticTimeout
     HiberbootBefore=$hiberBefore
     RestoreCommand='.\Install.ps1 -RestoreWindowsFirst'
     ManualEntryPath='\EFI\WindowsGPUUnlock\MANUAL.EFI'
     AutomaticEntryPath='\EFI\WindowsGPUUnlock\AUTO.EFI'
+    Recovery='Restart, wait for the Windows boot menu, and choose the entry that is not "Windows GPU UNLOCK Auto". Or run the restore command from Windows.'
   }|ConvertTo-Json -Depth 4|Set-Content -LiteralPath $planPath -Encoding UTF8
 
   $steps=@(
     [pscustomobject]@{Name='entry path -> automatic handoff';Run={[void](Invoke-Bcd @('/set',$entry,'path','\EFI\WindowsGPUUnlock\AUTO.EFI'))}}
     [pscustomobject]@{Name='entry description -> automatic';Run={[void](Invoke-Bcd @('/set',$entry,'description','Windows GPU UNLOCK Auto'))}}
     [pscustomobject]@{Name='disable Fast Startup';Run={Set-Hiberboot -Value 0}}
-    [pscustomobject]@{Name='automatic entry first';Run={Set-FirmwareOrder (@($entry) + @($orderBefore|Where-Object {$_ -ne $entry}))}}
+    [pscustomobject]@{Name='automatic entry first';Run={Set-BootOrder (@($entry) + @($orderBefore|Where-Object {$_ -ne $entry}))}}
+    [pscustomobject]@{Name=('boot menu timeout -> {0}s' -f $automaticTimeout);Run={Set-BootTimeout -Seconds $automaticTimeout}}
   )
   $verify={
     $text=Invoke-Bcd @('/enum')
@@ -345,16 +369,24 @@ function Invoke-EnableAutomatic {
     if($path -ne '\EFI\WindowsGPUUnlock\AUTO.EFI'){Fail ("Verification failed: entry path is '{0}'" -f $path)}
     $description=Get-BootEntryField $text $entry 'description'
     if($description -ne 'Windows GPU UNLOCK Auto'){Fail ("Verification failed: entry description is '{0}'" -f $description)}
-    $order=Get-FirmwareOrder (Invoke-Bcd @('/enum','{fwbootmgr}'))
-    if($order[0] -ne $entry){Fail ("Verification failed: firmware default is still {0}" -f $order[0])}
-    if($order -notcontains '{bootmgr}'){Fail 'Verification failed: {bootmgr} was dropped from the displayorder'}
+    $order=Get-BootOrder (Invoke-Bcd @('/enum','{bootmgr}'))
+    if($order[0] -ne $entry){Fail ("Verification failed: the first boot entry is still {0}" -f $order[0])}
+    if(($order -notcontains '{current}') -and ($order -notcontains '{default}')){
+      Fail 'Verification failed: the Windows fallback was dropped from the displayorder'
+    }
+    $timeout=Get-BootTimeout (Invoke-Bcd @('/enum','{bootmgr}'))
+    if($timeout -ne $automaticTimeout){Fail ("Verification failed: boot timeout is {0}" -f $timeout)}
     if((Get-Hiberboot) -ne 0){Fail 'Verification failed: Fast Startup is still enabled'}
+    if((Get-BootOrder (Invoke-Bcd @('/enum','{fwbootmgr}')))[0] -ne '{bootmgr}'){
+      Fail 'Verification failed: {bootmgr} is no longer the firmware default'
+    }
   }
   $rollback=@(
     [pscustomobject]@{Name='restore entry path';Run={[void](Invoke-Bcd @('/set',$entry,'path','\EFI\WindowsGPUUnlock\MANUAL.EFI'))}}
     [pscustomobject]@{Name='restore entry description';Run={[void](Invoke-Bcd @('/set',$entry,'description',$descriptionBefore))}}
     [pscustomobject]@{Name='restore Fast Startup';Run={if($null -ne $hiberBefore){Set-Hiberboot -Value ([int]$hiberBefore)}}}
-    [pscustomobject]@{Name='restore boot order';Run={Set-FirmwareOrder $orderBefore}}
+    [pscustomobject]@{Name='restore boot order';Run={Set-BootOrder $orderBefore}}
+    [pscustomobject]@{Name='restore boot timeout';Run={if($null -ne $state.BootTimeoutBefore){Set-BootTimeout -Seconds ([int]$state.BootTimeoutBefore)}}}
   )
   Invoke-AutomaticTransition -Steps $steps -Verify $verify -Rollback $rollback
 
@@ -367,19 +399,23 @@ function Invoke-EnableAutomatic {
 
 function Invoke-RestoreWindowsFirst {
   if(!(Test-Path -LiteralPath $stateFile)){
-    $fw=Invoke-Bcd @('/enum','{fwbootmgr}')
-    $order=Get-FirmwareOrder $fw
-    if($order[0] -eq '{bootmgr}'){Write-Host 'No install state and Windows is already first. Nothing to do.';return}
-    Fail ('No install state, but the firmware default is {0}. Use the firmware boot menu to start Windows, then restore the order manually' -f $order[0])
+    if((Get-BootOrder (Invoke-Bcd @('/enum','{bootmgr}')))[0] -eq '{current}'){
+      Write-Host 'No install state and Windows is already the first boot entry. Nothing to do.';return
+    }
+    Fail 'No install state, but Windows is not the first boot entry. Use the boot menu or the firmware menu to start Windows, then restore the order by hand'
   }
   $state=Get-Content -Raw -LiteralPath $stateFile|ConvertFrom-Json
   $entry=([string]$state.EntryId).ToLowerInvariant()
-  $orderNow=Get-FirmwareOrder (Invoke-Bcd @('/enum','{fwbootmgr}'))
-  $desired=@('{bootmgr}') + @($orderNow|Where-Object {$_ -ne '{bootmgr}'})
+  $orderNow=Get-BootOrder (Invoke-Bcd @('/enum','{bootmgr}'))
+  # Windows first, everything else (including the unlock entry) kept behind it so the
+  # manual test entry stays available and nothing is silently deleted.
+  $desired=@('{current}') + @($orderNow|Where-Object {$_ -ne '{current}'})
   $actions=@(
-    [pscustomobject]@{Name='Windows first';Run={Set-FirmwareOrder $desired}}
+    [pscustomobject]@{Name='Windows first';Run={Set-BootOrder $desired}}
     [pscustomobject]@{Name='restore Fast Startup'
       Run={if($null -ne $state.HiberbootBefore){Set-Hiberboot -Value ([int]$state.HiberbootBefore)}}}
+    [pscustomobject]@{Name='restore boot timeout'
+      Run={if($null -ne $state.BootTimeoutBefore){Set-BootTimeout -Seconds ([int]$state.BootTimeoutBefore)}}}
     [pscustomobject]@{Name='re-point the saved entry at the manual handoff'
       Run={
         if($entry -match '^\{[0-9a-f-]{36}\}$'){
@@ -395,11 +431,10 @@ function Invoke-RestoreWindowsFirst {
     Invoke-RecoveryActions -Actions $actions
   } catch {
     Write-Warning $_.Exception.Message
-    Write-Warning 'Windows-first recovery is independent of the saved entry: check the firmware default in the boot menu.'
+    Write-Warning 'Windows-first recovery is independent of the saved entry: check the first boot menu entry.'
   }
-  $order=Get-FirmwareOrder (Invoke-Bcd @('/enum','{fwbootmgr}'))
-  if($order[0] -ne '{bootmgr}'){Fail ("Verification failed: firmware default is {0}, not {{bootmgr}}" -f $order[0])}
-  if($order -notcontains '{bootmgr}'){Fail 'Verification failed: {bootmgr} is missing from the displayorder'}
+  $order=Get-BootOrder (Invoke-Bcd @('/enum','{bootmgr}'))
+  if($order[0] -ne '{current}'){Fail ("Verification failed: the first boot entry is {0}, not {{current}}" -f $order[0])}
   $state.Mode='restored-windows-first'
   $state|Add-Member -NotePropertyName RestoredUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
   $state|ConvertTo-Json -Depth 6|Set-Content -LiteralPath $stateFile -Encoding UTF8
@@ -433,11 +468,22 @@ function Invoke-Readiness {
   }
   if(Test-IsAdmin) {
     try {
-      $order=Get-FirmwareOrder (Invoke-Bcd @('/enum','{fwbootmgr}'))
-      $notes+=('firmware default     {0}' -f $order[0])
-      if($order[0] -ne '{bootmgr}' -and !(Test-Path -LiteralPath $stateFile)){$problems+=('Firmware default is {0} with no install state; restore Windows-first before changing anything' -f $order[0])}
-      if($order -notcontains '{bootmgr}'){$problems+='{bootmgr} is missing from the firmware displayorder'}
-    } catch {$problems+=('Cannot read the firmware boot order: ' + $_.Exception.Message)}
+      $firmware=Get-BootOrder (Invoke-Bcd @('/enum','{fwbootmgr}'))
+      $notes+=('firmware default     {0}' -f $firmware[0])
+      if($firmware[0] -ne '{bootmgr}' -and !(Test-Path -LiteralPath $stateFile)){
+        $problems+=('Firmware default is {0} with no install state; the unlock entry would never be reached' -f $firmware[0])
+      }
+      $windows=Get-BootOrder (Invoke-Bcd @('/enum','{bootmgr}'))
+      $timeout=Get-BootTimeout (Invoke-Bcd @('/enum','{bootmgr}'))
+      $notes+=('boot menu order      {0}' -f ($windows -join ' '))
+      $notes+=('boot menu timeout    {0}s' -f $timeout)
+      if(($windows -notcontains '{current}') -and ($windows -notcontains '{default}')){
+        $problems+='The Windows Boot Manager displayorder has no Windows fallback'
+      }
+      if($null -ne $timeout -and $timeout -eq 0){
+        $problems+='The boot menu timeout is 0: there would be no way to pick Windows instead of the unlock'
+      }
+    } catch {$problems+=('Cannot read the boot order: ' + $_.Exception.Message)}
     try {
       if(Test-Path -LiteralPath $stateFile){
         $state=Get-Content -Raw -LiteralPath $stateFile|ConvertFrom-Json
@@ -513,3 +559,4 @@ if($mode.Count -eq 0) {
 }
 if($mode -contains 'register'){Invoke-RegisterManual -Targets $targets -Files $files;return}
 if($mode -contains 'promote'){Invoke-EnableAutomatic -Targets $targets;return}
+

@@ -47,29 +47,65 @@ function Get-BootIdentifiers([string]$Text) {
   return @(Get-BootEntryBlocks $Text | ForEach-Object {$_.Identifier})
 }
 
-# The firmware boot order from `bcdedit /enum {fwbootmgr}`. Named identifiers such as
-# {bootmgr} are not GUIDs, so match letters too or the entry that must stay first is
-# silently dropped from the order.
-function Get-FirmwareOrder {
+# The application boot order from a `bcdedit /enum {bootmgr}` block, or the device order
+# from `bcdedit /enum {fwbootmgr}`. Named identifiers such as {bootmgr} and {current} are
+# not GUIDs, so match letters too or the identifiers that must stay in the list are
+# silently dropped.
+function Get-BootOrder {
   param([Parameter(Mandatory)][string]$Text)
   if($Text -notmatch '(?ms)^[ \t]*displayorder[ \t]+(.*?)(?=\r?\n\S|\z)'){
-    throw 'The firmware boot manager has no displayorder; refusing to guess one'
+    throw 'The boot manager has no displayorder; refusing to guess one'
   }
   $ids=@([regex]::Matches($Matches[1],'\{[0-9a-zA-Z-]+\}')|ForEach-Object {$_.Value.ToLowerInvariant()})
-  if($ids.Count -eq 0){throw 'The firmware displayorder lists no identifiers'}
-  if(($ids|Select-Object -Unique).Count -ne $ids.Count){throw 'The firmware displayorder repeats an identifier'}
-  return $ids
+  if($ids.Count -eq 0){throw 'The displayorder lists no identifiers'}
+  if(($ids|Select-Object -Unique).Count -ne $ids.Count){throw 'The displayorder repeats an identifier'}
+  # -NoEnumerate keeps a one-identifier order an array. Without it PowerShell unrolls the
+  # single element and callers indexing [0] get the first character of a string.
+  Write-Output -NoEnumerate $ids
 }
 
-# Writes the firmware order, refusing to drop the Windows fallback.
-function Set-FirmwareOrder {
-  param([Parameter(Mandatory)][string[]]$Identifiers)
-  if($Identifiers -notcontains '{bootmgr}'){
-    throw 'Refusing to write a displayorder without {bootmgr}: that removes the Windows fallback'
+# The menu timeout in seconds, or $null when the block has none.
+function Get-BootTimeout {
+  param([Parameter(Mandatory)][string]$Text)
+  # Captured text has CRLF endings, so the carriage return must be allowed before end of line.
+  if($Text -notmatch '(?m)^[ \t]*timeout[ \t]+(\d+)[ \t\r]*$'){return $null}
+  return [int]$Matches[1]
+}
+
+# The guard that keeps a Windows fallback, separated from the writer so the test suite can
+# prove the rule without ever touching real firmware state. Set-BootOrder is its only caller.
+function Assert-OrderKeepsWindows {
+  param([Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Identifiers)
+  if(($Identifiers -notcontains '{current}') -and ($Identifiers -notcontains '{default}')){
+    throw 'Refusing to write a displayorder without {current}: that removes the Windows fallback'
   }
-  $output=& bcdedit @(@('/set','{fwbootmgr}','displayorder') + $Identifiers) 2>&1
+}
+
+# Writes the Windows Boot Manager's application order, refusing to drop the Windows
+# fallback: an order without it would leave a machine that cannot boot its own system
+# without outside help.
+function Set-BootOrder {
+  param([Parameter(Mandatory)][string[]]$Identifiers)
+  Assert-OrderKeepsWindows -Identifiers $Identifiers
+  $output=& bcdedit @(@('/set','{bootmgr}','displayorder') + $Identifiers) 2>&1
   if($LASTEXITCODE -ne 0){
-    throw ("bcdedit /set {{fwbootmgr}} displayorder failed (exit {0}): {1}" -f $LASTEXITCODE,($output|Out-String).Trim())
+    throw ("bcdedit /set {{bootmgr}} displayorder failed (exit {0}): {1}" -f $LASTEXITCODE,($output|Out-String).Trim())
+  }
+}
+
+# Sets the Windows Boot Manager menu timeout and proves it read back. The timeout is what
+# an unattended boot waits before the first entry starts, so it must be small but non-zero:
+# zero would remove the only way to pick Windows instead of the unlock.
+function Set-BootTimeout {
+  param([Parameter(Mandatory)][int]$Seconds)
+  if($Seconds -lt 0 -or $Seconds -gt 3600){throw ("Refusing an unreasonable boot timeout: {0}" -f $Seconds)}
+  $output=& bcdedit @('/set','{bootmgr}','timeout',"$Seconds") 2>&1
+  if($LASTEXITCODE -ne 0){
+    throw ("bcdedit /set {{bootmgr}} timeout failed (exit {0}): {1}" -f $LASTEXITCODE,($output|Out-String).Trim())
+  }
+  $readBack=Get-BootTimeout ((& bcdedit @('/enum','{bootmgr}') 2>&1)|Out-String)
+  if($readBack -ne $Seconds){
+    throw ("Boot timeout did not stick: asked for {0}, read back {1}" -f $Seconds,$readBack)
   }
 }
 
@@ -208,3 +244,4 @@ function Invoke-AutomaticTransition {
     throw $original
   }
 }
+

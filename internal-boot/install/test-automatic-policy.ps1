@@ -96,7 +96,7 @@ $firmware=@(
   'timeout                 1'
 ) -join "`r`n"
 Check 'the real firmware order keeps {bootmgr} first' {
-  $order=Get-FirmwareOrder $firmware
+  $order=Get-BootOrder $firmware
   if($order.Count -ne 3){Fail ("parsed {0} identifiers, expected 3" -f $order.Count)}
   if($order[0] -ne '{bootmgr}'){Fail ("first identifier is '{0}'" -f $order[0])}
   if($order[1] -ne '{389ada0e-ce4b-11f1-b410-806e6f6e6963}'){Fail 'the second identifier was not preserved'}
@@ -109,13 +109,50 @@ Check 'a repeated identifier is refused' {
     '                        {bootmgr}'
     'timeout                 1'
   ) -join "`r`n"
-  Expect { Get-FirmwareOrder $bad } 'repeats an identifier'
+  Expect { Get-BootOrder $bad } 'repeats an identifier'
 }
 Check 'a missing displayorder is refused' {
-  Expect { Get-FirmwareOrder 'Firmware Boot Manager' } 'no displayorder'
+  Expect { Get-BootOrder 'Firmware Boot Manager' } 'no displayorder'
 }
 Check 'an empty displayorder is refused' {
-  Expect { Get-FirmwareOrder "identifier              {fwbootmgr}`r`ndisplayorder            `r`ntimeout 1" } 'displayorder'
+  Expect { Get-BootOrder "identifier              {fwbootmgr}`r`ndisplayorder            `r`ntimeout 1" } 'displayorder'
+}
+
+Write-Host 'automatic-policy: windows boot menu order'
+# The unlock entry is an application entry inside the Windows Boot Manager's own menu, so
+# the order that matters is the one in the {bootmgr} block, and it must keep Windows.
+$windowsMenu=@(
+  'Windows Boot Manager','--------------------','identifier              {bootmgr}'
+  ('device                  ' + $bootmgrDevice)
+  ('path                    ' + $bootmgrPath)
+  'default                 {current}'
+  'displayorder            {current}'
+  'toolsdisplayorder       {memdiag}'
+  'timeout                 30'
+) -join "`r`n"
+Check 'the real windows menu order is parsed' {
+  $order=Get-BootOrder $windowsMenu
+  if($order.Count -ne 1){Fail ("parsed {0} identifiers, expected 1" -f $order.Count)}
+  if($order[0] -ne '{current}'){Fail ("first identifier is '{0}'" -f $order[0])}
+}
+Check 'a menu order without the Windows fallback is refused' {
+  Expect { Assert-OrderKeepsWindows @($newId) } 'without {current}'
+}
+Check 'a menu order that keeps Windows passes the guard' {
+  # The guard is exercised through Assert-OrderKeepsWindows, never through Set-BootOrder:
+  # Set-BootOrder writes this machine's real firmware state and a test must not do that.
+  $order=@($newId,'{current}')
+  Assert-OrderKeepsWindows $order
+  if($order.Count -ne 2){Fail 'the guard changed the order it was given'}
+}
+Check 'an unreasonable boot timeout is refused before bcdedit runs' {
+  Expect { Set-BootTimeout -Seconds -1 } 'unreasonable boot timeout'
+  Expect { Set-BootTimeout -Seconds 3601 } 'unreasonable boot timeout'
+}
+Check 'the boot menu timeout is read' {
+  if((Get-BootTimeout $windowsMenu) -ne 30){Fail 'did not read 30'}
+  if((Get-BootTimeout "identifier  {bootmgr}`r`ntimeout                 0") -ne 0){Fail 'did not read 0'}
+  if($null -ne (Get-BootTimeout "identifier  {bootmgr}`r`ndisplayorder            {current}")){Fail 'invented a timeout'}
 }
 
 Write-Host 'automatic-policy: recovery and transition'
@@ -177,4 +214,5 @@ if($script:failed -gt 0) {
 }
 Write-Host ("PASS {0} automatic-policy checks" -f $script:passed)
 exit 0
+
 

@@ -151,10 +151,30 @@ Need 'Install.ps1' $install 'ConfirmedManualSuccess'
 Need 'Install.ps1' $install 'recovery-plan.json'
 Need 'Install.ps1' $install 'a boot entry must name the partition the image was built for'
 Forbid 'Install.ps1' $install 'bcdedit /delete'
+# The unlock image is an application entry in the Windows Boot Manager menu. The firmware
+# order may be read and checked, never written: Windows cannot create an NVRAM entry for an
+# arbitrary file, and rewriting the firmware order would remove the fallback path.
+Forbid 'Install.ps1' $install "'/set','{fwbootmgr}'"
+Forbid 'Install.ps1' $install "displayorder  '{fwbootmgr}'"
+Need 'Install.ps1' $install 'Assert-ManualEntryUsable'
+Need 'Install.ps1' $install 'Set-BootTimeout -Seconds'
+Need 'Install.ps1' $install 'BootTimeoutBefore'
+Need 'Install.ps1' $install "Mode='restored-windows-first'"
+Need 'Install.ps1' $install 'boot menu timeout'
 
 $policy = Read-Source 'internal-boot\install\automatic-policy.ps1'
 Need 'automatic-policy.ps1' $policy 'that removes the Windows fallback'
 Need 'automatic-policy.ps1' $policy 'Cannot attribute one new boot copy'
+Need 'automatic-policy.ps1' $policy 'Write-Output -NoEnumerate $ids'
+Need 'automatic-policy.ps1' $policy 'Boot timeout did not stick'
+Need 'automatic-policy.ps1' $policy 'Refusing an unreasonable boot timeout'
+Need 'automatic-policy.ps1' $policy 'function Assert-OrderKeepsWindows'
+# A test must never write firmware state: the guard is proved through its own function.
+$policyTests = Read-Source 'internal-boot\install\test-automatic-policy.ps1'
+Forbid 'test-automatic-policy.ps1' $policyTests 'Set-BootOrder @('
+Forbid 'test-automatic-policy.ps1' $policyTests 'Set-BootOrder $'
+Forbid 'test-automatic-policy.ps1' $policyTests "Invoke-Bcd @('/set'"
+Need 'test-automatic-policy.ps1' $policyTests 'Assert-OrderKeepsWindows'
 
 # --- report -------------------------------------------------------------------
 
