@@ -5,6 +5,11 @@
 #include <Protocol/LoadedImage.h>
 #include <Protocol/SimpleFileSystem.h>
 #include <Guid/FileInfo.h>
+#if defined(GU_INTERNAL_BOOT)
+/* Shared device-path policy. The internal build must accept the dedicated ESP
+   under the same strict node checks the USB path uses. */
+#include "../internal-boot/boot/media.h"
+#endif
 static EFI_GUID LoadedGuid=EFI_LOADED_IMAGE_PROTOCOL_GUID,PathGuid=EFI_DEVICE_PATH_PROTOCOL_GUID,
   FsGuid=EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID,InfoGuid=EFI_FILE_INFO_ID;
 static EFI_SYSTEM_TABLE *Table;
@@ -69,9 +74,18 @@ VOID GuLog(const char *Format,...) {
   GuLogText(text);
 }
 BOOLEAN GuLogReady(VOID){return Report && !LogFault;}
+/* Where this image may run from. The USB build keeps its original rule verbatim;
+   the internal build additionally accepts the dedicated ESP, and the automatic
+   child accepts *only* that partition - an automatic boot that found itself on a
+   USB stick would be running from media the installer never verified. */
 static BOOLEAN UsbPath(EFI_HANDLE Handle) {
   EFI_DEVICE_PATH_PROTOCOL *path=NULL;
   if(EFI_ERROR(Table->BootServices->HandleProtocol(Handle,&PathGuid,(VOID **)&path)) || !path)return FALSE;
+#if defined(GU_AUTOMATIC_BOOT)
+  return GuPathIsPartition(path,&GuInternalPartition);
+#elif defined(GU_INTERNAL_BOOT)
+  return GuAllowedMediaPath(path,TRUE);
+#else
   UINTN total=0;BOOLEAN usb=FALSE;
   for(UINTN nodes=0;nodes<64 && total+4<=4096;nodes++) {
     UINTN n=path->Length[0]+((UINTN)path->Length[1]<<8);
@@ -81,6 +95,7 @@ static BOOLEAN UsbPath(EFI_HANDLE Handle) {
     total+=n;path=(VOID *)((UINT8 *)path+n);
   }
   return FALSE;
+#endif
 }
 static EFI_STATUS Metadata(EFI_FILE_PROTOCOL *File,BOOLEAN Directory,UINTN Expected) {
   union {EFI_FILE_INFO info;UINT8 bytes[512];} data;UINTN n=sizeof(data);
@@ -106,8 +121,33 @@ EFI_STATUS GuIoOpen(EFI_HANDLE Image,EFI_SYSTEM_TABLE *St) {
 #endif
   if(EFI_ERROR(status) || !Parent)return EFI_NOT_FOUND;
   status=Metadata(Parent,TRUE,0);if(EFI_ERROR(status))return status;
-  for(UINTN slot=0;slot<100;slot++) {
+#if defined(GU_INTERNAL_BOOT)
+  /* A clean record left by an earlier boot must never authorize this one, so it is
+     removed before the first hardware gate runs. Anything but "was not there" is a
+     real failure: an undeletable stale record means the volume is not writable. */
+  {EFI_FILE_PROTOCOL *stale=NULL;
+   EFI_STATUS old=Parent->Open(Parent,&stale,L"HANDOFF.ST",EFI_FILE_MODE_READ|EFI_FILE_MODE_WRITE,0);
+   if(!EFI_ERROR(old)) {
+     if(!stale)return EFI_DEVICE_ERROR;
+     old=stale->Delete(stale);
+     if(EFI_ERROR(old))return old;
+   } else if(old!=EFI_NOT_FOUND)return old;}
+#endif
+#if defined(GU_AUTOMATIC_BOOT)
+  /* Automatic boots number their runs differently: the parent wrapper already owns
+     AUTO000000-style names for its own log, so the run directories get a six-digit
+     name that cannot collide with them or with the manual RUNnn series. */
+  const UINTN slots=1000000;
+#else
+  const UINTN slots=100;
+#endif
+  for(UINTN slot=0;slot<slots;slot++) {
+#if defined(GU_AUTOMATIC_BOOT)
+    CHAR16 name[]=L"AUTO000000";UINTN number=slot;
+    for(UINTN digit=0;digit<6;digit++){name[9-digit]=(CHAR16)('0'+number%10);number/=10;}
+#else
     CHAR16 name[]=L"RUN00";name[3]=(CHAR16)('0'+slot/10);name[4]=(CHAR16)('0'+slot%10);
+#endif
     EFI_FILE_PROTOCOL *existing=NULL;
     status=Parent->Open(Parent,&existing,name,EFI_FILE_MODE_READ,0);
     if(!EFI_ERROR(status)) {
@@ -122,7 +162,9 @@ EFI_STATUS GuIoOpen(EFI_HANDLE Image,EFI_SYSTEM_TABLE *St) {
     if(status!=EFI_NOT_FOUND)return status;
     status=Run->Open(Run,&Report,L"REPORT.TXT",EFI_FILE_MODE_READ|EFI_FILE_MODE_WRITE|EFI_FILE_MODE_CREATE,0);
     if(EFI_ERROR(status) || !Report)return EFI_DEVICE_ERROR;
-#if defined(GU_EXPERIMENTAL_3090)
+#if defined(GU_AUTOMATIC_BOOT)
+    GuLog("RTX3090 MULTI AUTOMATIC INTERNAL UNLOCK\nAUTO%06u\nEsc cancels; exact per-card gates and one transaction per card only.\n",(unsigned)slot);
+#elif defined(GU_EXPERIMENTAL_3090)
     GuLog("RTX3090 AMD EXPERIMENTAL MANUAL UNLOCK\nRUN%02u\nManual U starts one hardware transaction; Esc or timeout cancels. Hardware success unverified.\n",(unsigned)slot);
 #else
     GuLog("RTX3090 AMD read-only cold-state preflight\nRUN%02u\nCannot arm: GPU writes, DMA, reset and driver release are blocked.\n",(unsigned)slot);
@@ -131,6 +173,40 @@ EFI_STATUS GuIoOpen(EFI_HANDLE Image,EFI_SYSTEM_TABLE *St) {
   }
   return EFI_VOLUME_FULL;
 }
+#if defined(GU_INTERNAL_BOOT)
+/* ---- end-of-batch hand-off record ------------------------------------------
+   The parent wrapper refuses to start Windows unless this record proves the batch
+   finished clean, so it is written exactly once, last, after the retention pass.
+   The layout is fixed-width on purpose: the reader rejects a short or torn record
+   by length alone and never has to interpret a partial line. */
+static UINTN PutDecimal(char *out,UINT32 value) {
+  char digits[10];UINTN n=0;
+  do {digits[n++]=(char)('0'+(value%10));value/=10;} while(value);
+  for(UINTN i=0;i<n;i++)out[i]=digits[n-1-i];
+  return n;
+}
+EFI_STATUS GuWriteHandoff(UINT64 Status,UINT32 Eligible,UINT32 Unlocked,UINT32 Retained,UINT32 Clean) {
+  if(!Parent)return EFI_NOT_READY;
+  static const char Head[]="GUH1 ",Hex[]="0123456789abcdef";
+  char text[96];UINTN n=0;
+  for(UINTN i=0;Head[i];i++)text[n++]=Head[i];
+  for(UINTN i=0;i<16;i++)text[n++]=Hex[(unsigned)((Status>>((15-i)*4))&0xf)];
+  const UINT32 fields[4]={Eligible,Unlocked,Retained,Clean};
+  for(UINTN f=0;f<4;f++){text[n++]=' ';n+=PutDecimal(text+n,fields[f]);}
+  text[n++]='\n';
+  EFI_FILE_PROTOCOL *file=NULL;
+  EFI_STATUS status=Parent->Open(Parent,&file,L"HANDOFF.ST",EFI_FILE_MODE_READ|EFI_FILE_MODE_WRITE|EFI_FILE_MODE_CREATE,0);
+  if(EFI_ERROR(status) || !file)return EFI_DEVICE_ERROR;
+  UINTN wrote=n;
+  status=file->Write(file,&wrote,text);
+  if(!EFI_ERROR(status) && wrote!=n)status=EFI_DEVICE_ERROR;
+  EFI_STATUS flushed=file->Flush(file);
+  if(!EFI_ERROR(status))status=flushed;
+  EFI_STATUS closed=file->Close(file);
+  if(!EFI_ERROR(status))status=closed;
+  return status;
+}
+#endif
 EFI_STATUS GuLoadAssets(VOID) {
   for(UINTN i=0;i<5;i++) {
     EFI_FILE_PROTOCOL *file=NULL;const ASSET_SPEC *spec=&Specs[i];

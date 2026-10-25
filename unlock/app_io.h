@@ -8,3 +8,7 @@ BOOLEAN GuLogReady(VOID);
 BOOLEAN GuConsoleFault(VOID);
 UINTN GuLogDefects(VOID);
 VOID GuConsole(const char *Text);
+#if defined(GU_INTERNAL_BOOT)
+/* Durable end-of-batch record read by the parent handoff wrapper. */
+EFI_STATUS GuWriteHandoff(UINT64 Status,UINT32 Eligible,UINT32 Unlocked,UINT32 Retained,UINT32 Clean);
+#endif

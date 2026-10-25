@@ -9,6 +9,13 @@
 #include <Protocol/GraphicsOutput.h>
 #include <IndustryStandard/Acpi.h>
 #include <Guid/GlobalVariable.h>
+/* The automatic child is the only build that may skip the U key, and it stays
+   valid only on top of the exact profile the rig was measured with. Anything
+   else must fail to compile instead of silently producing an unattended
+   unlock with weaker gates. */
+#if defined(GU_AUTOMATIC_BOOT) && (!defined(GU_EXPERIMENTAL_3090) || !defined(GU_INTERNAL_BOOT) || !defined(GU_ENTRY_LATCHED_SS1_FULL) || !defined(GU_MULTI_TARGET))
+#error Automatic boot requires the multi-target experimental internal entryLatchedSs1Full profile
+#endif
 static EFI_GUID PciGuid=EFI_PCI_IO_PROTOCOL_GUID,GopGuid=EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
   PathGuid=EFI_DEVICE_PATH_PROTOCOL_GUID,GlobalGuid=EFI_GLOBAL_VARIABLE;
 static EFI_SYSTEM_TABLE *Table;
@@ -17,6 +24,11 @@ static const char *Stage;
 static GU_RELEASE_OWNER PendingOwner;
 static EFI_STATUS Step(EFI_STATUS Status) {
   GuLog("CHECK stage=%s status=%#llx\n",Stage,(unsigned long long)Status);
+#if defined(GU_AUTOMATIC_BOOT)
+  /* An unattended run has no operator to read a warning status: anything that is
+     not an outright error but still not success has to stop the batch. */
+  if(Status!=EFI_SUCCESS && !EFI_ERROR(Status))return EFI_DEVICE_ERROR;
+#endif
   return !GuLogReady() && !EFI_ERROR(Status)?EFI_DEVICE_ERROR:Status;
 }
 static VOID ConfigLog(const UINT32 *Config) {
@@ -597,6 +609,42 @@ static EFI_STATUS BatchArm(VOID) {
       Cards[i].Eligible ? "WILL UNLOCK" : "excluded (gate or pin)");
   GuLog("batch eligible=%zu of %zu; every transaction is confined to its own card.\n",
     (size_t)eligible, (size_t)GuTargetCount);
+#if defined(GU_AUTOMATIC_BOOT)
+  /* Unattended authorization: the batch arms itself, and the console key is only
+     ever used to CANCEL. A missing, resetting or failing keyboard therefore must
+     not block the boot - it only removes the operator's ability to cancel, which
+     is logged. Every hardware gate that follows is unchanged. */
+  GuConsole("Automatic batch unlock. Esc within 3 seconds cancels; no key is required.\n");
+  GuLogText("AUTOMATIC BATCH UNLOCK: Esc within 3 seconds cancels. No U required. One guarded attempt only.\n");
+  if (!GuLogReady() || Gu.fault) return EFI_DEVICE_ERROR;
+  Stage = "batch-arming";
+  BOOLEAN cancellable = Table->ConIn && Table->ConIn->Reset && Table->ConIn->ReadKeyStroke;
+  EFI_STATUS status = EFI_SUCCESS;
+  if (!cancellable) {
+    GuLogText("auto: no usable console input; the cancel window is disabled, the batch proceeds\n");
+  } else if (EFI_ERROR(status = Table->ConIn->Reset(Table->ConIn, FALSE))) {
+    GuLog("auto: ConIn reset failed status=%#llx; cancel window disabled, the batch proceeds\n",
+      (unsigned long long)status);
+    cancellable = FALSE;
+  }
+  for (UINTN wait = 0; cancellable && wait < 30; wait++) {
+    EFI_INPUT_KEY key = {0};
+    status = Table->ConIn->ReadKeyStroke(Table->ConIn, &key);
+    if (!EFI_ERROR(status)) {
+      if (key.ScanCode == 0x17 || key.UnicodeChar == 27) return EFI_ABORTED;
+    } else if (status != EFI_NOT_READY) {
+      GuLog("auto: console input failed status=%#llx; cancel window disabled, the batch proceeds\n",
+        (unsigned long long)status);
+      break;
+    }
+    GuStall(100000);
+  }
+  /* The window is time in which the log can fail; re-check before any card is
+     touched instead of trusting the state from three seconds ago. */
+  if (!GuLogReady() || Gu.fault) return EFI_DEVICE_ERROR;
+  GuLog("auto: batch authorized without a keystroke (eligible=%zu)\n", (size_t)eligible);
+  return GuLogReady() ? EFI_SUCCESS : EFI_DEVICE_ERROR;
+#else
   GuConsole("Multi-target unlock ready. U to authorize every listed card, Esc to abort.\n");
   if (!GuLogReady()) return EFI_DEVICE_ERROR;
   Stage = "batch-arming";
@@ -612,6 +660,7 @@ static EFI_STATUS BatchArm(VOID) {
     GuStall(100000); /* 3 s + 5 min window */
   }
   return EFI_TIMEOUT;
+#endif
 }
 
 /* Full phase B for one card. Returns the card status; *Stop ends the batch. */
@@ -746,6 +795,11 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE Image, EFI_SYSTEM_TABLE *St) {
     GuIoClose(); return EFI_COMPROMISED_DATA;
   }
   GuLog("multi-target build: targets=%zu max=%u\n", (size_t)GuTargetCount, (unsigned)GU_TARGET_MAX);
+#if defined(GU_AUTOMATIC_BOOT)
+  GuLog("BUILD MODE: automatic internal unlock; profile=%s; Esc cancels the batch; every per-card gate retained.\n", GU_STOCK_PROFILE_NAME);
+#elif defined(GU_INTERNAL_BOOT)
+  GuLog("BUILD MODE: manual internal unlock; profile=%s; one U authorizes the batch; every per-card gate retained.\n", GU_STOCK_PROFILE_NAME);
+#endif
 
   UINT8 secure = 0xff; UINTN bytes = 1;
   Stage = "secure-boot";
@@ -880,6 +934,22 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE Image, EFI_SYSTEM_TABLE *St) {
     GuLog("FINAL(multi) status=%#llx stage=%s targets=%zu console_fault=%u log_defects=%u\n",
       (unsigned long long)status, Stage, (size_t)GuTargetCount, (unsigned)GuConsoleFault(),
       (unsigned)GuLogDefects());
+#if defined(GU_INTERNAL_BOOT)
+  /* Last write of the run, after the retention pass: the parent wrapper starts
+     Windows only if this record says the batch finished clean. A write failure is
+     folded into the return status so a handoff can never see a stale verdict. */
+  {
+    UINT32 eligible = 0, unlocked = 0, retained = 0, clean = 0;
+    for (UINTN i = 0; i < GuTargetCount; i++) {
+      if (Cards[i].Eligible) eligible++;
+      if (Cards[i].Unlocked) unlocked++;
+      if (Cards[i].Retained) retained++;
+      if (Cards[i].Clean) clean++;
+    }
+    EFI_STATUS handed = GuWriteHandoff((UINT64)status, eligible, unlocked, retained, clean);
+    if (EFI_ERROR(handed) && !EFI_ERROR(status)) status = handed;
+  }
+#endif
   if (Gu.owned) { Gu.bs->CloseProtocol(Gu.handle, &PciGuid, Image, NULL); Gu.owned = FALSE; }
   GuReleaseAssets();
   GuIoClose();

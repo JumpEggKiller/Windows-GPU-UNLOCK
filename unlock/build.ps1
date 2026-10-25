@@ -6,6 +6,8 @@ param(
  [switch]$ExperimentalUnlock,
  [switch]$MachineLocal,
  [switch]$MultiTarget,
+ [switch]$InternalBoot,
+ [switch]$AutomaticBoot,
  [ValidateSet('original03100062','observed03000062','entryLatchedSs1Preserve','entryLatchedSs1Full')][string]$StockProfile
 )
 $ErrorActionPreference='Stop'
@@ -15,11 +17,20 @@ try {
  if($ExperimentalUnlock -and !$PSBoundParameters.ContainsKey('StockProfile')){throw '-StockProfile is required with -ExperimentalUnlock'}
  if(!$ExperimentalUnlock -and $PSBoundParameters.ContainsKey('StockProfile')){throw '-StockProfile is only valid with -ExperimentalUnlock'}
  if($MultiTarget -and $MachineLocal){throw '-MultiTarget and -MachineLocal are mutually exclusive machine profiles'}
+ # The unattended child runs on a rig whose console GOP belongs to a card the table
+ # excludes, so it is only ever valid on the measured multi-target profile. app.c
+ # repeats this as a compile-time #error; refusing here keeps the manifest honest.
+ if($InternalBoot -and (!$ExperimentalUnlock -or $StockProfile -ne 'entryLatchedSs1Full')){throw '-InternalBoot requires -ExperimentalUnlock -StockProfile entryLatchedSs1Full'}
+ if($AutomaticBoot -and (!$InternalBoot -or !$MultiTarget)){throw '-AutomaticBoot requires -MultiTarget -InternalBoot'}
  $out=if($MultiTarget){"build/multi/"+$(if($ExperimentalUnlock){"experimental/$StockProfile"}else{'preflight'})}elseif($ExperimentalUnlock){"build/experimental/$StockProfile"}elseif($MachineLocal){'build/local'}else{'build'}
  $name=if($MultiTarget){"RTX3090-MULTI-"+$(if($ExperimentalUnlock){"EXPERIMENTAL-$StockProfile"}else{'PREFLIGHT'})}elseif($ExperimentalUnlock){"RTX3090-EXPERIMENTAL-$StockProfile"}elseif($MachineLocal){'RTX3090-PREFLIGHT-LOCAL'}else{'RTX3090-PREFLIGHT'}
+ if($InternalBoot){$out+='/internal';$name+='-INTERNAL'}
+ if($AutomaticBoot){$out+='/automatic';$name+='-AUTO'}
  $defines=@()
  if($MachineLocal){$defines+= '-DGU_MACHINE_LOCAL'}
  if($MultiTarget){$defines+= '-DGU_MULTI_TARGET'}
+ if($InternalBoot){$defines+= '-DGU_INTERNAL_BOOT'}
+ if($AutomaticBoot){$defines+= '-DGU_AUTOMATIC_BOOT'}
   if($ExperimentalUnlock){$defines+= '-DGU_EXPERIMENTAL_3090';$defines+=$(switch($StockProfile){'original03100062'{'-DGU_STOCK_PROFILE_ORIGINAL_03100062'} 'observed03000062'{'-DGU_STOCK_PROFILE_OBSERVED_03000062'} 'entryLatchedSs1Preserve'{'-DGU_ENTRY_LATCHED_SS1_PRESERVE'} 'entryLatchedSs1Full'{'-DGU_ENTRY_LATCHED_SS1_FULL'}})}
  New-Item -ItemType Directory -Path $out -Force | Out-Null
  # PromSha256 records the runtime PROM pin baked into THIS build (consumed by
@@ -71,8 +82,8 @@ try {
  & $Python verify_pe.py "$out/$name.EFI" "$out/$name.map" --output "$out/pe-verification.json"
  if($LASTEXITCODE -ne 0){throw 'PE verification failed'}
  [ordered]@{BuiltUtc=[DateTime]::UtcNow.ToString('o');TargetPci='220410de';Subsystem=$(if($MachineLocal){'14541b4c (machine_local)'}else{'145410de'});
-  Mode=$(if($ExperimentalUnlock){'experimental-exact-card-manual-unlock'}else{'diagnostic-preflight-only'});
-  CanArm=[bool]$ExperimentalUnlock;Defines=$defines;ManualConfirmation='U once; Esc or 30-second timeout cancels';
+  Mode=$(if($AutomaticBoot){'automatic-internal-exact-card-multi-unlock'}elseif($InternalBoot){'manual-internal-exact-card-multi-unlock'}elseif($ExperimentalUnlock){'experimental-exact-card-manual-unlock'}else{'diagnostic-preflight-only'});
+  CanArm=$(if($AutomaticBoot){$false}else{[bool]$ExperimentalUnlock});Defines=$defines;ManualConfirmation=$(if($AutomaticBoot){'none; Esc within 3 seconds cancels the batch'}elseif($InternalBoot){'U once; Esc or 5-minute timeout cancels'}else{'U once; Esc or 30-second timeout cancels'});
   StockProfile=$(if($ExperimentalUnlock){$StockProfile}else{$null});ColdChipExpected='0xb72000a1';ColdSS0Expected=$(if($StockProfile -like 'entryLatchedSs1*'){'first fully validated cold entry; immutable'}elseif($ExperimentalUnlock){if($StockProfile -eq 'original03100062'){'0x03100062'}else{'0x03000062'}}else{'unknown'});ColdSS1Expected=$(if($StockProfile -like 'entryLatchedSs1*'){'first fully validated cold entry <= 0xf; immutable'}else{'0x6'});
   SS0Target='0x88888888';SS1Target=$(if($StockProfile -eq 'entryLatchedSs1Preserve'){'preserve entry; no SS1 writes'}elseif($StockProfile -eq 'entryLatchedSs1Full'){'0x8; one guarded write'}elseif($ExperimentalUnlock){'0x8'}else{'no writes'});
   OriginalBaselineCapture='G:/RTX3090-PREFLIGHT/RUN00/REPORT.TXT';
@@ -80,6 +91,7 @@ try {
   PromSha256=$promPin;
   Targets=$(if($MultiTarget){$targetRows}else{$null});
   TargetCount=$(if($MultiTarget){$targetRows.Count}else{$null});
+  EligibleExpected=$(if($MultiTarget){($targetRows | Where-Object {$_.UnlockAllowed}).Count}else{$null});
   DeviceMemorySize='0x6000';HardwareTested=$false;
   EfiSha256=(Get-FileHash -LiteralPath "$out/$name.EFI" -Algorithm SHA256).Hash;
   Headers=@(Get-ChildItem -LiteralPath . -Recurse -File -Filter '*.h' | Where-Object {$_.FullName -notlike '*\build\*'} | Sort-Object FullName | ForEach-Object {[ordered]@{Path=$_.FullName.Substring($PSScriptRoot.Length+1);Sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash}});
