@@ -17,26 +17,38 @@ been executed against this machine yet: the only writes ever made were into
 ## Step 0 — choose the dedicated ESP (needs a decision before anything else)
 
 The window must begin with a partition decision, because `Configure.ps1` bakes the
-partition GUID into the wrapper. Two ways to get a ≥1 GiB FAT32 partition that is not the
-Windows ESP:
+partition GUID into the wrapper. No mechanical disk is involved: this machine has SSD space
+that needs no resize at all.
 
-**A. Carve a new one (recommended: genuinely dedicated, as the brief requires).**
-Read-only capacity check already done; shrinkable space: `F:` 174.2 GB, `G:` 631.7 GB,
-`H:` 1620.5 GB, `D:` 194.5 GB, `E:` 63.6 GB. Example on `F:` (disk 2):
+**A. Disk 4, in space that is already free (recommended).** `tigo SSD 1TB`, SATA SSD, GPT,
+931.5 GB with **3.05 GB unallocated at the end of the disk**. Its only partition is a Linux
+filesystem (`0fc63daf-8483-4772-8e79-3d69d8477de4`) that Windows cannot even mount; creating
+a partition in the trailing free extent moves nothing, shrinks nothing and touches nothing:
 
 ```powershell
-Resize-Partition -DriveLetter F -Size (2794.4GB - 1.5GB)      # shrink, no data move
-New-Partition -DiskNumber 2 -UseMaximumSize -DriveLetter S `
+New-Partition -DiskNumber 4 -Size 1.5GB -DriveLetter S `
   -GptType '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' |
   Format-Volume -FileSystem FAT32 -NewFileSystemLabel GPUUNLOCK -Confirm:$false
-Get-Partition -DiskNumber 2 | Format-Table PartitionNumber,DriveLetter,Size,Type
+Get-Partition -DiskNumber 4 | Format-Table PartitionNumber,DriveLetter,Size,GptType
 ```
-Two facts to confirm at the keyboard before the resize: the unallocated space ends up
-*after* the shrunk partition, and nothing else on that disk lives past it. Rollback is
-`Remove-Partition` + `Resize-Partition -Size` back to the original size — no data is
-written into the shrunk region by the shrink itself.
+Rollback: `Remove-Partition -DiskNumber 4 -PartitionNumber <new>` — the space returns to
+exactly the state it is in now.
 
-**B. Reuse the existing 1.05 GiB FAT32 ESP already on disk 5 partition 1**
+**B. Disk 7, by shrinking `D:`.** `KINGBANK KP230 PRO`, NVMe SSD, single partition with
+720.73–953.87 GB supported sizes, so 1.5 GiB can be given up and the new partition placed in
+the freed tail. Costs one resize of a live data volume:
+
+```powershell
+$d=Get-Partition -DriveLetter D
+Resize-Partition -DriveLetter D -Size ($d.Size - 1.5GB)
+New-Partition -DiskNumber 7 -UseMaximumSize -DriveLetter S `
+  -GptType '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' |
+  Format-Volume -FileSystem FAT32 -NewFileSystemLabel GPUUNLOCK -Confirm:$false
+```
+Rollback: `Remove-Partition`, then `Resize-Partition -DriveLetter D` back to the original
+size. The shrink itself never writes into the freed region.
+
+**C. Reuse the existing 1.05 GiB FAT32 ESP on disk 5 partition 1**
 (`{d0dec9de-7da0-4902-9e33-bcc0259bd48f}`, 1.04 GB free, not `IsSystem`). No partition
 change at all; needs only a temporary letter:
 
@@ -45,6 +57,9 @@ Add-PartitionAccessPath -DiskNumber 5 -PartitionNumber 1 -AccessPath 'S:\'
 ```
 Cost: our files land in the ESP of an existing Linux installation. Nothing of that
 installation is modified or deleted, but the partition is shared.
+
+The mechanical disks (`ST2000DM005`, `ST3000VX000`, `WD40PURX`, `WD1002FAEX`) have no free
+extent at all and would each need a resize; none of them is a candidate.
 
 ## Step 1 — pin, build, prove (still no boot configuration change)
 

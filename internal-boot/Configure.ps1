@@ -61,7 +61,12 @@ try {
  if($List) {
   'Disks:'
   Get-Disk | ForEach-Object {
-   '{0} {1} {2} {3}GB ({4}GB free)' -f $_.Number,$_.FriendlyName,$_.PartitionStyle,[math]::Round($_.Size/1GB,1),[math]::Round($_.SizeRemaining/1GB,2)
+   $diskNumber=$_.Number
+   # $_ is rebound inside Where-Object, so the number has to be captured first.
+   $media=(Get-PhysicalDisk|Where-Object {$_.DeviceId -eq [string]$diskNumber}).MediaType
+   # SizeRemaining reads 0 on a disk whose space all sits inside partitions, so the largest
+   # unallocated extent is the only honest answer to "could a partition be created here".
+   '{0} {1} {2} {3} {4}GB (largest free extent {5}GB)' -f $_.Number,$_.FriendlyName,$_.PartitionStyle,$media,[math]::Round($_.Size/1GB,1),[math]::Round($_.LargestFreeExtent/1GB,2)
   }
   ''
   'ESP-typed partitions:'
