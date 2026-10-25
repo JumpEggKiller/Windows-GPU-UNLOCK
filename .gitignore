@@ -6,6 +6,11 @@ benchmark/results/
 benchmark/build-manifest.json
 benchmark/runtime-verification.json
 benchmark/packages-manifest.json
+# internal-boot: generated per-machine configuration and per-mode child contracts.
+internal-boot/boot/platform-config.h
+internal-boot/boot/generated-manual.h
+internal-boot/boot/generated-auto.h
+internal-boot/local-config.json
 assets/
 usb-package/
 *.bin
