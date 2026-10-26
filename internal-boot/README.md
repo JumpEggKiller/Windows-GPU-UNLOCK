@@ -9,6 +9,12 @@ No reset, no USB stick, no keyboard authorization.
 It is an adaptation of the upstream `internal-boot` work in
 <https://github.com/impacifist/Windows-GPU-UNLOCK> to this specific machine.
 
+**Running this on a different machine: see [ADOPT-RIG.md](ADOPT-RIG.md).** It is the
+agent-facing procedure for a fresh rig: inventory, one read-only probe boot, pin
+generation (`unlock\pins-from-report.ps1`), build, stage, manual test, then the
+firmware boot order. It also states the three limits (card family, per-machine PROM
+pin, display card) and every value that still has to be regenerated per machine.
+
 ## What is different from upstream
 
 | upstream | this tree | why |

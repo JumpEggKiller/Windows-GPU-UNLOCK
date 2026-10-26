@@ -63,6 +63,15 @@ try {
   [void]$failed.Add('staged set')
 }
 
+Section 'pin generation: a partial or unsupported card table is refused'
+try {
+  & (Join-Path $here '..\unlock\test-pins-from-report.ps1')
+  if ($LASTEXITCODE -ne 0) { [void]$failed.Add('pin generation') }
+} catch {
+  Write-Host ('FAIL pin generation: {0}' -f $_.Exception.Message)
+  [void]$failed.Add('pin generation')
+}
+
 Section 'internal-boot source audit'
 try {
   & (Join-Path $here 'boot\audit.ps1')
