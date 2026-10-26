@@ -267,6 +267,24 @@ If a run fails, Gate D option A applies: the wrapper stops with
 either pick Boot0000 at POST or clear the order with
 `.\Install.ps1 -RestoreWindowsFirst` from Windows.
 
+### The entry stays, its menu row does not
+
+Once the firmware order is the trigger, the Windows menu must not offer a row that cannot load
+(chosen by hand it returns `0xC000007B` and then the menu). The row is removed with the entry
+left alone — the firmware `Boot####` option is derived from the entry, so deleting the entry
+would remove the automatic path as well:
+
+```powershell
+. .\internal-boot\install\automatic-policy.ps1
+Set-BootOrder @('{current}')     # back to the original single-row menu
+```
+
+Applied on 2026-10-26 (backup `C:\ProgramData\WindowsGPUUnlock\Backups\20261026-221338050`).
+Afterwards: `{bootmgr}` `default {current}`, `displayorder {current}`, `timeout 30`, the entry
+still present with `path \EFI\WindowsGPUUnlock\AUTO.EFI`, and the firmware order unchanged with
+Boot0004 first — so the next power-on behaves exactly as the tested one. To put the row back for
+a manual test: `bcdedit /set {bootmgr} displayorder {current} {<EntryId>}`.
+
 
 ## Rollback, in one command each
 
