@@ -91,8 +91,11 @@ try {
   StockProfileSource=$(if($StockProfile -like 'entryLatchedSs1*'){'Explicit immutable validated entry latch; no fixed stock selector assumption'}elseif($StockProfile -eq 'observed03000062'){'Explicit observed03000062 experiment selection; original baseline capture does not evidence this SS0'}elseif($ExperimentalUnlock){'OriginalBaselineCapture'}else{'preflight has no selected stock profile'});
   PromSha256=$promPin;
   Targets=$(if($MultiTarget){$targetRows}else{$null});
-  TargetCount=$(if($MultiTarget){$targetRows.Count}else{$null});
-  EligibleExpected=$(if($MultiTarget){($targetRows | Where-Object {$_.UnlockAllowed}).Count}else{$null});
+  TargetCount=$(if($MultiTarget){@($targetRows).Count}else{$null});
+  # @( ) is load bearing: with a single GU_CARD row $targetRows holds one OrderedDictionary,
+  # and an OrderedDictionary has its own .Count (its key count), so a one-card rig reported
+  # ten eligible cards and internal-boot\Build.ps1 then refused to accept its own child.
+  EligibleExpected=$(if($MultiTarget){@($targetRows | Where-Object {$_.UnlockAllowed}).Count}else{$null});
   DisplayException=$(if($MultiTarget){($targetRows | Where-Object {$_.DisplayMaySitOnTargetGop} | ForEach-Object {$_.Name}) -join ','}else{$null});
   DeviceMemorySize='0x6000';HardwareTested=$false;
   EfiSha256=(Get-FileHash -LiteralPath "$out/$name.EFI" -Algorithm SHA256).Hash;

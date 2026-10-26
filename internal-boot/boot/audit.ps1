@@ -296,6 +296,11 @@ Need 'verify_pe.py' $verify 'def write_checksum'
 Need 'verify_pe.py' $verify "int(found[1], 16) - image_base == entry"
 $blankBuild = Read-Source 'unlock\build.ps1'
 Need 'build.ps1' $blankBuild '--write-checksum'
+# A one-card rig must still build: with a single GU_CARD row the filtered count is one
+# OrderedDictionary, whose .Count is its key count (10), so the @( ) wrapper is what makes
+# EligibleExpected mean "cards" on a single-card machine.
+Need 'build.ps1' $blankBuild '@($targetRows | Where-Object {$_.UnlockAllowed}).Count'
+Need 'build.ps1' $blankBuild '@($targetRows).Count'
 $bootTests = Read-Source 'internal-boot\boot\run-tests.ps1'
 Need 'run-tests.ps1' $bootTests 'expected the verifier to refuse'
 Need 'run-tests.ps1' $bootTests '-BootApplication'
@@ -314,4 +319,5 @@ Write-Host '  flow: any non-success stops the handoff'
 Write-Host '  record: GUH1, lower-case hex, every card unlocked and retained'
 Write-Host '  media: exact partition GUID, GPT, one hard-drive node'
 Write-Host '  child: automatic batch authorization, record written, four cards including the display adapter'
+Write-Host '  build.ps1: the eligible count is an array count, so one card is one card'
 exit 0

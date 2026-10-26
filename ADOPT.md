@@ -1,4 +1,8 @@
-# Unlock your RTX 3090s — the one-command path
+# Unlock a stock RTX 3090 — the one-command path
+
+This is written for a machine that has **never** been unlocked: a normal desktop with one (or a
+few) stock RTX 3090s, Windows on it, and nothing prepared yet. You do not have to know anything
+about this project beforehand, and you do not have to read the rest of the repository.
 
 This repository makes a **UEFI application** that unlocks the GPU's stock power/virtualization
 limits **before Windows starts**, proves the result, and then boots Windows normally. Nothing is
@@ -7,6 +11,17 @@ boot because it never survives a power cycle by design.
 
 `Adopt.ps1` walks one machine through the whole thing in ten small steps and remembers where it
 is. Each run is resumable: run it, do what it asks, run it again.
+
+**What changes for you:** the card performs like a card without its power cap — Tensor/FP16
+throughput goes up, the SM clock ceiling goes down, gaming clocks are not the point. Nothing is
+permanent: after a power cycle the card is exactly as it was until the next boot re-applies it.
+
+**The one hardware thing to check first:** the console has to be able to survive the unlock. If
+your **only** display output is the card you want to unlock (a single-GPU desktop with no iGPU and
+no BMC), the flow will **refuse** that card on purpose — releasing its firmware driver blanks the
+screen and there would be no way to hand off to Windows. With an iGPU, a BMC/IPMI console, or a
+second GPU, it works.
+
 
 ---
 
@@ -46,10 +61,11 @@ generator (it reads `.tar.zst`), which is a different Python from the one that b
 
 | requirement | why |
 |---|---|
-| an RTX 3090 (`10de:2204`, VBIOS `94.02.*`) is the **measured** family | the flow still detects and records any NVIDIA card; the unlock's own stock-profile gate is what refuses a card whose VBIOS/GFW family has no measured profile. Nothing is refused by the wrapper beforehand |
-| the five firmware assets, generated once under WSL/Linux | see the recipe above; `unlock/assets.json` pins size and SHA-256 |
-| Secure Boot **off** | the image is not signed by Microsoft; an unsigned image cannot be booted with it on |
+| a **display path that is not the card being unlocked** — an iGPU, a BMC/IPMI console, or a second GPU | unlocking releases the card's firmware driver, which can blank the console; the display check refuses to unlock a card when it is the only one left drawing the screen |
+| one or more RTX 3090s (`10de:2204`, VBIOS `94.02.*`) | this is the **measured** family. The flow still detects and records any NVIDIA card; the unlock's own stock-profile gate is what refuses a card whose VBIOS/GFW family has no measured profile, and it does that at runtime with a log instead of guessing |
+| Windows installed and bootable, **Secure Boot off** | the image is not signed by Microsoft; an unsigned image cannot be booted with it on |
 | `C:` BitLocker **fully decrypted**, protection off | the installer refuses to run otherwise, and never changes your encryption settings |
+| the five firmware assets, generated once under WSL/Linux | see the recipe above; `unlock/assets.json` pins size and SHA-256 |
 | admin PowerShell | boot configuration and the ESP need it |
 | Python 3, clang/lld | only if you build from source; bundled tools are used when present |
 
@@ -102,9 +118,16 @@ firmware -> our image -> unlock all cards -> prove it -> start Windows Boot Mana
   a machine that keeps retrying a firmware change is a machine you cannot reason about. Power off,
   then pick Windows from the firmware's own boot menu, or run `.\Adopt.ps1 -Restore` later.
 * The proof is a file, not a message: `<esp>:\RTX3090-UNLOCK\HANDOFF.ST` contains
-  `GUH1 <status> <eligible> <unlocked> <retained> <clean>`. A clean boot reads
-  `GUH1 0000000000000000 4 4 4 4`. The wrapper refuses to start Windows unless that record says
-  every card was unlocked and still reads unlocked afterwards.
+  `GUH1 <status> <eligible> <unlocked> <retained> <clean>`. The numbers are **your** card count:
+  on this fork's reference machine (four cards) a clean boot reads
+  `GUH1 0000000000000000 4 4 4 4`; on a one-card machine it reads
+  `GUH1 0000000000000000 1 1 1 1`. The wrapper refuses to start Windows unless that record says
+  every card it pinned was unlocked and still reads unlocked afterwards.
+* Your first run on a locked card is the interesting comparison: measure the card before
+  (`nvidia-smi --query-gpu=clocks.sm,power.limit`, or a Tensor benchmark) and after a boot with the
+  unlock in front. On the reference machine FP16 throughput went from about 82 to about 129 TFLOPS
+  per card; your numbers will differ, and SM clocks actually go **down**, because the cap is gone
+  rather than raised.
 
 ### When something goes wrong
 
@@ -132,7 +155,18 @@ firmware -> our image -> unlock all cards -> prove it -> start Windows Boot Mana
 证明解锁成功，然后正常进入 Windows。不刷 VBIOS，不删分区，不动 Windows 的 EFI 分区；
 解锁本身每次开机重做，因为它按设计不跨断电保留。
 
+**这份文档是写给一张从没解锁过的普通机器的**：一台装了 Windows、显卡还是出厂状态、什么都没准备
+的台式机。你不需要事先了解这个项目，也不需要读仓库里其它文件。
+
 `Adopt.ps1` 把整台机器的流程拆成十个小步骤并记住进度，随时可中断、可重跑。
+
+**你会得到什么**：解除功耗上限后的算力 —— Tensor/FP16 吞吐上升，SM 频率上限反而**下降**，
+这不是超频。断电后一切复原，下次开机再自动做一遍，不留痕迹。
+
+**动手前先确认一件硬件上的事**：控制台必须能在解锁过程中活下来。如果你**唯一的显示输出**就是
+要解锁的那张卡（单卡、无核显、无 BMC 的机器），流程会**主动拒绝**这张卡 —— 释放它的固件驱动会
+把屏幕弄黑，之后就没法交接给 Windows 了。有核显、有 BMC/IPMI 控制台、或还有第二张卡，才可以。
+
 
 ### 只有你能做的四件事
 
@@ -160,9 +194,11 @@ make inputs firmware PYTHON=python3.14 INPUTS="$PWD/inputs" ASSETS="$PWD/assets"
 
 | 条件 | 原因 |
 |---|---|
-| RTX 3090（`10de:2204`，VBIOS `94.02.*`）是**已实测**的一族 | 流程仍会自动识别并记录任何 NVIDIA 卡；真正拒绝的只有解锁内部的同族校验（没有实测 profile 的 VBIOS/GFW 族会被拒），外壳不会提前拦下 |
-| 关闭 Secure Boot | 镜像没有微软签名，开了就启动不了 |
+| **有一条不走被解锁卡**的显示通路 —— 核显、BMC/IPMI 控制台、或第二张卡 | 解锁会释放这张卡的固件驱动，可能把控制台弄黑；当它成为唯一还在显示画面的一张卡时，显示检查会拒绝解锁它 |
+| 一张或多张 RTX 3090（`10de:2204`，VBIOS `94.02.*`） | 这是**已实测**的一族。流程仍会自动识别并记录任何 NVIDIA 卡；真正拒绝的只有解锁内部的同族校验，而且它是**运行时**拒绝 + 写日志，不靠猜 |
+| 装好能启动的 Windows，**关闭 Secure Boot** | 镜像没有微软签名，开了就启动不了 |
 | `C:` 的 BitLocker 已完全解密、保护关闭 | 否则安装器拒绝运行；它从不改你的加密设置 |
+| 五个固件资源，在 WSL/Linux 上生成一次 | 见上面的配方；`unlock/assets.json` 固定了大小与 SHA-256 |
 | 管理员 PowerShell | 改启动配置和写 ESP 需要 |
 | Python 3、clang/lld | 只有从源码构建才需要；能找到内置工具时自动使用 |
 
@@ -212,8 +248,12 @@ cd Windows-GPU-UNLOCK
 * 失败时：屏幕**停住**，不会重启循环，也不会进 Windows。这是故意的——会自己反复重试固件改动的机器无法排查。
   断电，用主板的开机菜单选 Windows，或者之后跑 `.\Adopt.ps1 -Restore`。
 * 证据是文件不是提示：`<esp>:\RTX3090-UNLOCK\HANDOFF.ST` 里是
-  `GUH1 <status> <eligible> <unlocked> <retained> <clean>`。干净的一次是
-  `GUH1 0000000000000000 4 4 4 4`。记录不干净，外壳就**拒绝**启动 Windows。
+  `GUH1 <status> <eligible> <unlocked> <retained> <clean>`。数字是**你这台机**的卡数：
+  本 fork 的参考机（四张卡）干净的一次是 `GUH1 0000000000000000 4 4 4 4`；单卡机器上是
+  `GUH1 0000000000000000 1 1 1 1`。记录不干净，外壳就**拒绝**启动 Windows。
+* 第一次用未解锁的卡时，值得先量一下再比：记下 `nvidia-smi --query-gpu=clocks.sm,power.limit`
+  或跑一次 Tensor 基准，然后在解锁项排在最前的情况下再开一次机。参考机上 FP16 大约从 82 升到
+  129 TFLOPS/张；你的数字会不同，而且 SM 频率是**下降**的——上限被拿掉了，不是被抬高了。
 
 ### 出问题怎么办
 

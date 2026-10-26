@@ -4,6 +4,10 @@ A UEFI application that runs **before** Windows, unlocks the factory power/virtu
 limits on every card it finds, **proves** the result from a file on disk, and then starts
 Windows without a reset. The unlock is volatile: it is re-done on every cold boot, on purpose.
 
+It is written for a machine that has **never** been unlocked — a normal desktop with a stock
+RTX 3090 (one, or several), Windows installed, nothing prepared. Nothing here is permanent:
+after a power cycle the card is exactly as it was until the next boot re-applies the unlock.
+
 > **Start here / 从这里开始: [ADOPT.md](ADOPT.md)** — one command, ten resumable steps,
 > English and 中文. This page is the summary; ADOPT.md is the procedure.
 
@@ -37,11 +41,17 @@ enforced. Any NVIDIA card is inventoried and pinned; the flow does not stop at d
 
 ## What still refuses, and where
 
-The refusal that matters lives **inside the unlock**, not in the wrapper: before touching a
-card it checks the observed VBIOS/GFW family against the selected stock profile (chip id,
-GUFW status words, SS0/SS1) and stops that card with a log on the ESP if the family does not
-match. That is fail-closed by design — a card with an unmeasured family is *not* unlocked, and
-Windows still starts.
+Two refusals matter, and both are deliberate.
+
+**1. No console to fall back on.** Unlocking a card releases its firmware driver, which can blank
+the screen. So the **display card** is only unlocked when at least one other display path survives
+(an iGPU, a BMC/IPMI console, or a second GPU). On a single-GPU desktop whose only output is the
+card itself, the flow refuses that card instead of taking the screen away from you.
+
+**2. An unmeasured VBIOS/GFW family.** Before touching a card the unlock compares what it observes
+(chip id, GUFW status words, SS0/SS1) with the selected stock profile, and stops that card with a
+log on the ESP if the family does not match. Fail-closed by design: a card with an unmeasured
+family is *not* unlocked, and Windows still starts.
 
 `-StockProfile` (default `entryLatchedSs1Full`) selects the family. Adding a new family means
 measuring it, not disabling the check.
@@ -59,9 +69,12 @@ Everything else is automated, and every step is resumable.
 ## Verified state
 
 On the reference machine (4 × RTX 3090, GIGABYTE MZ32-AR0-00): **Gate C, D and E all PASS** —
-manual boot, first unattended cold boot, and a second unattended cold boot. Four cards
-`unlocked=1 retained=1 clean=1`, `batch summary: eligible=4 attempted=4 unlocked=4 retained=4
-of 4 targets`, `FINAL(multi) status=0`, Windows up 4 s later with driver 617.42 and no reset.
+manual boot, first unattended cold boot, and a second unattended cold boot. On that machine the
+record reads `GUH1 0000000000000000 4 4 4 4`: four cards `unlocked=1 retained=1 clean=1`,
+`batch summary: eligible=4 attempted=4 unlocked=4 retained=4 of 4 targets`,
+`FINAL(multi) status=0`, Windows up 4 s later with driver 617.42 and no reset. A one-card machine
+is expected to record `GUH1 0000000000000000 1 1 1 1`; the numbers follow **your** card count, and
+your timings will differ.
 Evidence: [`internal-boot/evidence/gate-c-2026-10-26/`](internal-boot/evidence/gate-c-2026-10-26/),
 `internal-boot/CHANGE-PROPOSAL.md`, `internal-boot/MAINTENANCE.md`.
 
@@ -88,6 +101,9 @@ The upstream single-machine log (measurements, the manual USB procedure, the ASU
 一个 UEFI 应用程序：在 Windows **之前**运行，找出并解锁每张卡的出厂功耗/虚拟化限制，
 用磁盘上的文件**证明**结果，然后**不复位**直接启动 Windows。解锁是易失的，每次冷启动
 都重新做一遍，这是设计如此。
+
+**这份东西是写给一张从没解锁过的普通机器的**：装了 Windows、显卡还是出厂状态的台式机，
+单卡或多卡都行，什么准备都没有。这里的一切都不留痕：断电之后卡就是原样，直到下次开机再自动做一遍。
 
 > **从这里开始：[ADOPT.md](ADOPT.md)** —— 一条命令、十个可续跑的步骤，英文 + 中文。
 > 本页是摘要，ADOPT.md 是流程。
@@ -117,9 +133,15 @@ cd Windows-GPU-UNLOCK
 
 ## 仍会拒绝的地方
 
-真正说不的是**解锁内部**，不是外壳：动卡之前，它把实测的 VBIOS/GFW 族与所选 stock profile
-比对（芯片 id、GUFW 状态字、SS0/SS1），族不匹配就**不解锁这张卡**，并在 ESP 上留下日志。
-这是 fail-closed：族未实测的卡不会被解锁，但 Windows 照常启动。
+有两处拒绝，都是故意的。
+
+**一、没有第二条显示通路。** 解锁会释放这张卡的固件驱动，可能把屏幕弄黑。所以**显示卡**只有在
+还有别的显示通路活着时才解锁（核显、BMC/IPMI 控制台、或第二张卡）。单卡、且唯一输出就是这张卡
+的台式机，流程会**拒绝解锁这张卡**，而不是把你的屏幕拿走。
+
+**二、VBIOS/GFW 族没有实测过。** 动卡之前，解锁内部把实测值（芯片 id、GUFW 状态字、SS0/SS1）
+与所选 stock profile 比对，族不匹配就**不解锁这张卡**，并在 ESP 上写日志。这是 fail-closed：
+族未实测的卡不会被解锁，但 Windows 照常启动。
 
 `-StockProfile`（默认 `entryLatchedSs1Full`）用来选择族。新增一族意味着**去实测它**，
 而不是关掉校验。
@@ -136,9 +158,10 @@ cd Windows-GPU-UNLOCK
 ## 已验证状态
 
 参考机（4 × RTX 3090，技嘉 MZ32-AR0-00）：**Gate C、D、E 全部 PASS** —— 手动启动、第一次
-无人值守冷启动、第二次无人值守冷启动。四张卡 `unlocked=1 retained=1 clean=1`，
-`batch summary: eligible=4 attempted=4 unlocked=4 retained=4 of 4 targets`，
-`FINAL(multi) status=0`，4 秒后 Windows 起来，驱动 617.42，全程无复位。
+无人值守冷启动、第二次无人值守冷启动。那台机器上的记录是 `GUH1 0000000000000000 4 4 4 4`：
+四张卡 `unlocked=1 retained=1 clean=1`，`batch summary: eligible=4 attempted=4 unlocked=4
+retained=4 of 4 targets`，`FINAL(multi) status=0`，4 秒后 Windows 起来，驱动 617.42，全程无复位。
+单卡机器的记录应当是 `GUH1 0000000000000000 1 1 1 1` —— 数字按**你自己的**卡数走，时间也会不同。
 
 ## 运行前必须知道
 
