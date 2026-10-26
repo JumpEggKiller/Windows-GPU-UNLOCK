@@ -58,11 +58,11 @@ try {
  # shape: a fixed high base, no placement flags, then the subsystem value written by
  # boot-application.py because lld-link has no name for 16. Firmware ignores the
  # subsystem value, so the same image still loads from a USB firmware entry.
- & $LldLink /nologo /nodefaultlib /subsystem:efi_application /entry:efi_main /machine:x64 /base:0x140000000 /dynamicbase:no /nxcompat:no /timestamp:0 /opt:ref /opt:icf "/map:$out/$name.map" "/out:$out/$name.EFI" @objects
+ & $LldLink /nologo /nodefaultlib /subsystem:efi_application /entry:efi_main /machine:x64 /base:0 /dynamicbase /nxcompat /timestamp:0 /opt:ref /opt:icf "/map:$out/$name.map" "/out:$out/$name.EFI" @objects
  if($LASTEXITCODE -ne 0){throw 'EFI link failed'}
  & $Python (Join-Path $PSScriptRoot 'boot-application.py') "$out/$name.EFI"
  if($LASTEXITCODE -ne 0){throw 'Promoting the image to a boot application failed'}
- & $Python (Join-Path $repo 'unlock\verify_pe.py') "$out/$name.EFI" "$out/$name.map" --boot-application --output "$out/pe-verification.json"
+ & $Python (Join-Path $repo 'unlock\verify_pe.py') "$out/$name.EFI" "$out/$name.map" --output "$out/pe-verification.json"
  if($LASTEXITCODE -ne 0){throw 'PE verification failed'}
  [ordered]@{
   BuiltUtc=[DateTime]::UtcNow.ToString('o')

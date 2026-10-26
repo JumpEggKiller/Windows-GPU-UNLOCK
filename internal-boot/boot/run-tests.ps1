@@ -42,10 +42,14 @@ try {
   "OK pe $([IO.Path]::GetFileName($Efi))"
  }
  if(Test-Path -LiteralPath 'build/manual/HANDOFF.EFI'){
-  Assert-Pe 'build/manual/HANDOFF.EFI' 'build/manual/HANDOFF.map' -BootApplication
+  # The wrapper is started by firmware from a Boot#### load option, so it must be a plain
+  # EFI application: the boot manager refuses our images outright (0xC0000428, untrusted
+  # signature), so the subsystem 16 profile must now be the one that fails.
+  Assert-Pe 'build/manual/HANDOFF.EFI' 'build/manual/HANDOFF.map'
+  Assert-Pe 'build/manual/HANDOFF.EFI' 'build/manual/HANDOFF.map' -BootApplication -MustFail
  }
  if(Test-Path -LiteralPath 'build/automatic/AUTO.EFI'){
-  Assert-Pe 'build/automatic/AUTO.EFI' 'build/automatic/AUTO.map' -BootApplication
+  Assert-Pe 'build/automatic/AUTO.EFI' 'build/automatic/AUTO.map'
  }
  $child='..\..\unlock\build\multi\experimental\entryLatchedSs1Full\internal\RTX3090-MULTI-EXPERIMENTAL-entryLatchedSs1Full-INTERNAL.EFI'
  if(Test-Path -LiteralPath $child){

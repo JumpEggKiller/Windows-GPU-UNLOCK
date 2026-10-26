@@ -242,31 +242,36 @@ Forbid 'test-automatic-policy.ps1' $policyTests 'Set-BootOrder $'
 Forbid 'test-automatic-policy.ps1' $policyTests "Invoke-Bcd @('/set'"
 Need 'test-automatic-policy.ps1' $policyTests 'Assert-OrderKeepsWindows'
 
-# --- image shape the Windows boot manager accepts ------------------------------
-# bootmgr refused a subsystem 10 EFI application with 0xC000007B, so the wrapper is
-# linked at a fixed high base with no placement flags and promoted to a boot
-# application after linking. Both halves of that must stay in the build.
+# --- image shape: firmware loads the wrapper, the boot manager cannot ----------
+# Three cold boots established the chain: 0xC000007B (plain EFI application, format),
+# 0xC0000221 (subsystem 16 without a checksum), 0xC0000428 (untrusted signature). The
+# boot manager route is closed, so the wrapper must stay the plain EFI application that
+# firmware loads from a Boot#### option, with the checksum still written.
 $bootBuild = Read-Source 'internal-boot\boot\build.ps1'
-Need 'build.ps1' $bootBuild '/base:0x140000000'
-Need 'build.ps1' $bootBuild '/dynamicbase:no /nxcompat:no'
+Need 'build.ps1' $bootBuild '/base:0 /dynamicbase /nxcompat'
 Need 'build.ps1' $bootBuild "'boot-application.py'"
-Need 'build.ps1' $bootBuild '--boot-application'
+Forbid 'build.ps1' $bootBuild '/base:0x140000000'
 $promote = Read-Source 'internal-boot\boot\boot-application.py'
 Need 'boot-application.py' $promote 'WINDOWS_BOOT_APPLICATION = 16'
 Need 'boot-application.py' $promote 'must not advertise ASLR or NX placement flags'
 Need 'boot-application.py' $promote 'a boot application needs a page aligned non-zero image base'
 Need 'boot-application.py' $promote 'only an EFI application may be promoted'
-# 0xC0000221 is the boot manager's checksum check: the promoted image must carry a
-# checksum computed after the last header edit, not the zero lld-link leaves behind.
+Need 'boot-application.py' $promote 'a firmware-loaded wrapper must stay an EFI application'
+Need 'boot-application.py' $promote 'a firmware-loaded wrapper must keep image base 0'
+# 0xC0000221 is the Windows loader's checksum check: the image must carry a checksum
+# computed after the last header edit, not the zero lld-link leaves behind.
 Need 'boot-application.py' $promote 'compute_checksum'
 Need 'boot-application.py' $promote 'Always (re)write the checksum'
 Need 'boot-application.py' $promote 'optional + 64, checksum'
 $verify = Read-Source 'unlock\verify_pe.py'
 Need 'verify_pe.py' $verify "'must be a Windows boot application (subsystem 16)'"
-Need 'verify_pe.py' $verify "'boot application must carry a PE checksum'"
-Need 'verify_pe.py' $verify "'boot application checksum does not match the image"
+Need 'verify_pe.py' $verify "'image must carry a PE checksum'"
+Need 'verify_pe.py' $verify "'PE checksum does not match the image"
 Need 'verify_pe.py' $verify "'must be EFI application'"
+Need 'verify_pe.py' $verify 'def write_checksum'
 Need 'verify_pe.py' $verify "int(found[1], 16) - image_base == entry"
+$blankBuild = Read-Source 'unlock\build.ps1'
+Need 'build.ps1' $blankBuild '--write-checksum'
 $bootTests = Read-Source 'internal-boot\boot\run-tests.ps1'
 Need 'run-tests.ps1' $bootTests 'expected the verifier to refuse'
 Need 'run-tests.ps1' $bootTests '-BootApplication'

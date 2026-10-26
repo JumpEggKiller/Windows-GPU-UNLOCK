@@ -6,6 +6,29 @@ import re
 import struct
 from pathlib import Path
 
+def write_checksum(path):
+    """Store the PE checksum the Windows loader verifies and lld-link leaves zero.
+
+    Separate from inspect() on purpose: verification must be able to fail, so the repair
+    is an explicit step a build script asks for, never a side effect of checking.
+    """
+    data = bytearray(Path(path).read_bytes())
+    pe = struct.unpack_from('<I', data, 0x3c)[0]
+    optional = pe + 24
+    struct.pack_into('<I', data, optional + 64, 0)
+    total = 0
+    for offset in range(0, len(data) - (len(data) % 2), 2):
+        total += struct.unpack_from('<H', data, offset)[0]
+        total = (total & 0xffff) + (total >> 16)
+    if len(data) % 2:
+        total += data[-1]
+        total = (total & 0xffff) + (total >> 16)
+    total = (total & 0xffff) + (total >> 16)
+    value = (total + len(data)) & 0xffffffff
+    struct.pack_into('<I', data, optional + 64, value)
+    Path(path).write_bytes(bytes(data))
+    return value
+
 def inspect(path, map_path, boot_application=False):
     data = Path(path).read_bytes()
     def require(condition, message):
@@ -26,33 +49,34 @@ def inspect(path, map_path, boot_application=False):
         # An image the Windows boot manager is asked to start from a BCD entry is a
         # boot application (IMAGE_SUBSYSTEM_WINDOWS_BOOT_APPLICATION, 16), mapped at
         # a real preferred base, exactly like the memtest.efi that ships next to
-        # bootmgfw.efi. Firmware also loads subsystem 16 happily; it ignores the
-        # value, so one image can satisfy both loaders.
+        # bootmgfw.efi. The boot manager route is closed for our own images (0xC0000428,
+        # untrusted signature), but the shape stays checkable for its own tests.
         require(subsystem == 16, 'must be a Windows boot application (subsystem 16)')
         require(image_base != 0 and image_base % 0x10000 == 0,
                 'boot application needs a page aligned non-zero image base')
-        # The boot manager verifies the PE checksum and reports 0xC0000221
-        # (STATUS_IMAGE_CHECKSUM_MISMATCH) when it is wrong, including when it is the
-        # zero lld-link leaves behind. Recompute it the way the loader does.
-        stored = u32(optional+64)
-        body = bytearray(data)
-        struct.pack_into('<I', body, optional+64, 0)
-        total = 0
-        for offset in range(0, len(body) - (len(body) % 2), 2):
-            total += struct.unpack_from('<H', body, offset)[0]
-            total = (total & 0xffff) + (total >> 16)
-        if len(body) % 2:
-            total += body[-1]
-            total = (total & 0xffff) + (total >> 16)
-        total = (total & 0xffff) + (total >> 16)
-        computed = (total + len(body)) & 0xffffffff
-        require(stored != 0, 'boot application must carry a PE checksum')
-        require(stored == computed,
-                'boot application checksum does not match the image (0x%08x != 0x%08x)' % (stored, computed))
     else:
         require(subsystem == 10, 'must be EFI application')
         require(image_base == 0, 'expected image base 0')
         require(characteristics & 0x140 == 0x140, 'ASLR and NX flags required')
+    # The Windows loader verifies the PE checksum and reports 0xC0000221
+    # (STATUS_IMAGE_CHECKSUM_MISMATCH) for a zero or stale one; lld-link leaves it zero.
+    # Firmware does not care, but an image that cannot be started by every loader on this
+    # machine is a trap for the next person, so every image we build must be correct.
+    stored = u32(optional+64)
+    body = bytearray(data)
+    struct.pack_into('<I', body, optional+64, 0)
+    total = 0
+    for offset in range(0, len(body) - (len(body) % 2), 2):
+        total += struct.unpack_from('<H', body, offset)[0]
+        total = (total & 0xffff) + (total >> 16)
+    if len(body) % 2:
+        total += body[-1]
+        total = (total & 0xffff) + (total >> 16)
+    total = (total & 0xffff) + (total >> 16)
+    computed = (total + len(body)) & 0xffffffff
+    require(stored != 0, 'image must carry a PE checksum')
+    require(stored == computed,
+            'PE checksum does not match the image (0x%08x != 0x%08x)' % (stored, computed))
     entry = u32(optional+16)
     require(entry != 0, 'entry point missing')
     require(u32(optional+108) >= 16, 'data directory missing')
@@ -83,6 +107,11 @@ if __name__ == '__main__':
     p.add_argument('--boot-application', action='store_true',
                    help='the image is started by the Windows boot manager, so it must be '
                         'a subsystem 16 boot application with a non-zero image base')
-    a = p.parse_args(); result = inspect(a.efi, a.map, a.boot_application)
+    p.add_argument('--write-checksum', action='store_true',
+                   help='store the PE checksum before verifying (lld-link leaves it zero)')
+    a = p.parse_args()
+    if a.write_checksum:
+        print('%s: checksum 0x%08x written' % (Path(a.efi).name, write_checksum(a.efi)))
+    result = inspect(a.efi, a.map, a.boot_application)
     Path(a.output).write_text(json.dumps(result, indent=2)+'\n')
     print(json.dumps(result))

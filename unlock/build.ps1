@@ -80,7 +80,7 @@ try {
  }
  & $LldLink /nologo /nodefaultlib /subsystem:efi_application /entry:efi_main /machine:x64 /base:0 /dynamicbase /nxcompat /timestamp:0 /opt:ref /opt:icf "/map:$out/$name.map" "/out:$out/$name.EFI" @objects
  if($LASTEXITCODE -ne 0){throw 'EFI link failed'}
- & $Python verify_pe.py "$out/$name.EFI" "$out/$name.map" --output "$out/pe-verification.json"
+ & $Python verify_pe.py "$out/$name.EFI" "$out/$name.map" --write-checksum --output "$out/pe-verification.json"
  if($LASTEXITCODE -ne 0){throw 'PE verification failed'}
  [ordered]@{BuiltUtc=[DateTime]::UtcNow.ToString('o');TargetPci='220410de';Subsystem=$(if($MachineLocal){'14541b4c (machine_local)'}else{'145410de'});
   Mode=$(if($AutomaticBoot){'automatic-internal-exact-card-multi-unlock'}elseif($InternalBoot){'manual-internal-exact-card-multi-unlock'}elseif($ExperimentalUnlock){'experimental-exact-card-manual-unlock'}else{'diagnostic-preflight-only'});
