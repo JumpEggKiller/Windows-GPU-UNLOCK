@@ -10,7 +10,7 @@ param(
  [string]$Clang='clang',
  [string]$LldLink='lld-link',
  [string]$Python='python',
- [int]$ExpectedUnlocked=3
+ [int]$ExpectedUnlocked=4
 )
 $ErrorActionPreference='Stop'
 Push-Location -LiteralPath $PSScriptRoot

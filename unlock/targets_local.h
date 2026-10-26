@@ -15,19 +15,22 @@
    only permitted in a preflight-only build (port.h #error enforces that).
 
    Field order: Name, segment, bus, device, function, subsystem, config_c8,
-   prom_sha256, unlock_allowed. Table order is execution order; the console GOP
-   card (GPU0) is last on purpose. */
+   prom_sha256, unlock_allowed, display_may_sit_on_target_gop. Table order is
+   execution order; the console GOP card (GPU0) is last on purpose. */
 #pragma once
 
 /* Rig-level facts, NOT card identity: identical in machine_local.h and
    inherited by every card here, because they describe this one machine.
      - BAR0 base is firmware-assigned, so it stays log-only; the 16 MiB LENGTH
-       is still pinned by BarCheck because PromCheck reads BAR0+0x300000.
+        is still pinned by BarCheck because PromCheck reads BAR0+0x300000.
      - There is no AMD iGPU on this board: the console comes from the ASPEED
-       BMC, so two physical GOPs exist (ASPEED + one RTX). The display gate is
-       therefore log-only exactly as in the verified single-card build. The
-       per-card safety property is NOT relaxed: DisplayCheck still refuses any
-       GOP that sits on the target BDF (app.c), which is what protects GPU0. */
+        BMC, so two physical GOPs exist (ASPEED + one RTX). The display gate is
+        therefore log-only exactly as in the verified single-card build.
+     - DisplayCheck still refuses any GOP that sits on the target BDF, for every
+        card but one. The single exception is the last field of the GPU0 row:
+        it says "this card may be unlocked even though it owns a GOP", and the
+        gate only honours it while at least one OTHER physical GOP (the ASPEED
+        one) is still usable. The refusal itself is never deleted - see app.c. */
 #ifndef GU_BAR0_BASE
 #define GU_BAR0_BASE 0ULL
 #endif
@@ -55,11 +58,22 @@
    matched=1" with no digest printed), which is an independent confirmation of the prose
    that a cold boot always yields the same ROM.
 
-   UnlockAllowed is policy, not a measurement. GPU0 is measured and fully pinned, but it is
-   FALSE on purpose: it is the display adapter (it owns the GOP at 0000:01:00.0), DisplayCheck
-   refuses any target whose BDF owns a GOP, and RUN06 shows exactly that refusal
-   ("GOP[1] sits on target BDF - refuse", valid=0). Its GOP risk is a separate decision and
-   is not taken here.
+   UnlockAllowed is policy, not a measurement. All four rows are now TRUE: the owner asked
+   for a four-card unlock after the three-card path was verified end to end (RUN01: three
+   unlocked, retained and clean, Windows up 6 s later, driver 617.42, no code 43). GPU0 is
+   the display adapter - it owns the GOP at 0000:01:00.0 - so it is the one row that also
+   sets display_may_sit_on_target_gop. What that buys and what it costs:
+     - DisplayCheck still refuses any GOP on the target BDF for every card that does not
+       carry that flag, and it still refuses GPU0 unless a second physical GOP survives,
+       so "unlock the only display path on this machine" stays impossible by construction.
+     - Disconnecting GPU0's firmware driver (the driver release step) can blank the UEFI
+       console for the rest of the batch. That is why GPU0 is LAST: the first three cards
+       finish and log before the console can disappear, and every step is written to the
+       file log, which does not depend on the console. The Windows driver re-initialises
+       the card after the handoff, so the desktop still comes up.
+     - RUN06 recorded the exact refusal this flag relaxes: "GOP[1] sits on target BDF -
+       refuse", valid=0. If GPU0 ever stops being the GOP owner on this board, the flag
+       becomes inert rather than dangerous.
 
    ROW ORDER IS EXECUTION ORDER. GPU3 first because it is the one card whose unlocked result
    is already verified, so the batch machinery is exercised on a known outcome before it
@@ -67,10 +81,10 @@
    it owns the console GOP and must not be able to take the earlier cards' log with it. */
 #define GU_CARD_TABLE(GU_CARD)                                                                     \
   GU_CARD("GPU3", 0, 0xC1, 0, 0, 0x14541B4CU, 0x00050011U,                                        \
-          "e23caae3312afa69407c7cc79538875d5cf36e78065ce4c0d615a61bffa7e5bb", TRUE)                \
+          "e23caae3312afa69407c7cc79538875d5cf36e78065ce4c0d615a61bffa7e5bb", TRUE, FALSE)         \
   GU_CARD("GPU1", 0, 0x41, 0, 0, 0x38821462U, 0x00050011U,                                        \
-          "d96a2b5eae93db1a2ad4d6b11f7653032b2124e45f96814e573877544620b514", TRUE)                \
+          "d96a2b5eae93db1a2ad4d6b11f7653032b2124e45f96814e573877544620b514", TRUE, FALSE)         \
   GU_CARD("GPU2", 0, 0x81, 0, 0, 0x38821462U, 0x00050011U,                                        \
-          "d96a2b5eae93db1a2ad4d6b11f7653032b2124e45f96814e573877544620b514", TRUE)                \
+          "d96a2b5eae93db1a2ad4d6b11f7653032b2124e45f96814e573877544620b514", TRUE, FALSE)         \
   GU_CARD("GPU0", 0, 0x01, 0, 0, 0x14541B4CU, 0x00050011U,                                        \
-          "6e6deb3c5f07d0f9f4534a3e1536aac8ddfa34f37d0d16f9528d0f2c31f0ad04", FALSE)
+          "6e6deb3c5f07d0f9f4534a3e1536aac8ddfa34f37d0d16f9528d0f2c31f0ad04", TRUE, TRUE)

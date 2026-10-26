@@ -153,6 +153,47 @@ int main(void) {
     Check(!GuTargetTableCheck(T, 0), "empty table rejected");
     Check(!GuTargetTableCheck(T, GU_TARGET_MAX + 1u), "oversized table rejected");
     Check(!GuTargetTableCheck(NULL, 1), "null table rejected");
+    /* The display exception is policed by the table itself: exactly one card may
+       own a GOP on its own BDF, and it must be a card that can be unlocked.
+       Without this, two rows could each blank the console. */
+    T[0].DisplayMaySitOnTargetGop = TRUE;
+    Check(GuTargetTableCheck(T, 2), "one display-permitted unlockable row accepted");
+    T[1].DisplayMaySitOnTargetGop = TRUE;
+    Check(!GuTargetTableCheck(T, 2), "two display-permitted rows rejected");
+    T[1].DisplayMaySitOnTargetGop = FALSE;
+    T[1].DisplayMaySitOnTargetGop = TRUE; T[1].UnlockAllowed = FALSE;
+    Check(!GuTargetTableCheck(T, 2), "display permission on a read-only row rejected");
+    T[1].DisplayMaySitOnTargetGop = FALSE; T[0].DisplayMaySitOnTargetGop = TRUE;
+    T[0].UnlockAllowed = FALSE;
+    Check(!GuTargetTableCheck(T, 2), "display permission without any unlockable row rejected");
+    T[0].UnlockAllowed = TRUE;
+    T[0].DisplayMaySitOnTargetGop = FALSE;
+    Check(GuTargetTableCheck(T, 2), "removing the permission is accepted again");
+  }
+  /* The rig table: four cards, four of them unlockable, and exactly one row is the
+     display exception. This is the shape the four-card port was verified against. */
+  {
+    UINTN Eligible = 0, Permitted = 0, G0 = GuTargetCount;
+    for (I = 0; I < GuTargetCount; ++I) {
+      if (GuTargets[I].UnlockAllowed) ++Eligible;
+      if (GuTargets[I].DisplayMaySitOnTargetGop) ++Permitted;
+      if (strcmp(GuTargets[I].Name, "GPU0") == 0) G0 = I;
+    }
+    Check(GuTargetCount == 4, "four cards are pinned");
+    Check(Eligible == 4, "all four cards are unlockable");
+    Check(Permitted == 1, "exactly one card owns the display exception");
+    Check(G0 < GuTargetCount, "GPU0 row present");
+    if (G0 < GuTargetCount) {
+      Check(GuTargets[G0].UnlockAllowed, "GPU0 is unlockable in the four-card port");
+      Check(GuTargets[G0].DisplayMaySitOnTargetGop, "GPU0 carries the display exception");
+      Check(G0 == GuTargetCount - 1, "GPU0 executes last so the console survives the first cards");
+      Check(GuTargetPinned(&GuTargets[G0]), "GPU0 is still fully pinned");
+    }
+    for (I = 0; I < GuTargetCount; ++I) {
+      if (strcmp(GuTargets[I].Name, "GPU0") == 0) continue;
+      snprintf(Name, sizeof(Name), "%s is not the display exception", GuTargets[I].Name);
+      Check(!GuTargets[I].DisplayMaySitOnTargetGop, Name);
+    }
   }
 #else
   printf("multi_target test requires -DGU_MULTI_TARGET\n");

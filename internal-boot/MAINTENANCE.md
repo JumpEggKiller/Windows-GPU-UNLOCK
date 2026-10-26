@@ -7,7 +7,7 @@ been executed against this machine yet: the only writes ever made were into
 ## Already done and verified (no hardware touched)
 
 - `unlock\run-local-tests.ps1` — ALL RUNNABLE GROUPS PASSED (includes the 82-check
-  multi-target arming suite and the GPU0-disallowed audit).
+  multi-target arming suite and the display-exception audit).
 - `internal-boot\Test.ps1` — ALL INTERNAL-BOOT SOFTWARE TESTS PASSED: host tests, 24
   installer-policy checks, 7 read-only plan checks, source audit, and the child suite above.
 - `internal-boot\Build.ps1` — four artifacts, bit-identical across rebuilds, PE verified.
@@ -92,7 +92,7 @@ So after a cold boot Windows comes up with no Strata process and nothing listeni
 That is a production state, not a defect of this port, and fixing it means adding a trigger
 that writes `{"action":"restore"}` into `swap\results\sup_request.json` and then runs the
 task — a change to the production launcher that needs its own approval. Until then Gate D can
-be judged on "three cards unlocked, driver healthy, Windows booted without a reset" and Strata
+be judged on "four cards unlocked, driver healthy, Windows booted without a reset" and Strata
 must be restored by hand with the documented supervisor:
 
 ```powershell
@@ -194,10 +194,18 @@ A warm restart can follow a firmware/Fast-Startup path that never presents the b
 a cold power-on does, and the unlock is volatile anyway, so Gate C has to rehearse the exact
 cold path Gate D depends on. At the Windows menu pick **Windows GPU UNLOCK Manual**. Expected
 console sequence: the wrapper banner, `internal-handoff-v1`, the child banner, the 3-second auto
-cancel window, three cards unlocked, `HANDOFF.ST` accepted, then bootmgfw starts and Windows
+cancel window, four cards unlocked, `HANDOFF.ST` accepted, then bootmgfw starts and Windows
 comes up without a reset. Then confirm in Windows: four RTX nodes, driver 617.42, no Code 43,
 and (`Get-Partition`/`nvidia-smi` as usual) that Strata's state is whatever §"Blocking item for
 Gate D" says it is.
+
+The fourth card is the display adapter, so expect the console to go quiet **after** GPU0's
+driver release — that is the design, not a failure: GPU0 is last, the first three cards have
+already finished and logged, and the wrapper needs no console after the child returns. Read the
+outcome from `S:\RTX3090-UNLOCK\AUTO000000\REPORT.TXT` (automatic) or `RUN00\REPORT.TXT`
+(manual) plus `HANDOFF.ST` instead of from the screen. A blank screen that never reaches
+Windows is not this: in that case the machine either stayed in the firmware or the wrapper
+stopped, and the log tells you which.
 
 If anything fails: the wrapper stops and prints the reason; power-cycle, choose the first
 menu entry (Windows), then run `.\Install.ps1 -RestoreWindowsFirst`.

@@ -83,6 +83,12 @@ static BOOLEAN AmdGopParent(EFI_DEVICE_PATH_PROTOCOL *Path) {
 }
 static BOOLEAN DisplayCheck(VOID) {
   EFI_HANDLE *handles=NULL;UINTN count=0,intel=0;BOOLEAN valid=TRUE;
+#if defined(GU_MULTI_TARGET)
+  /* Only the multi-target gate has a per-card display exception, so these two
+     counters exist only there: in a single-card build they would be set and
+     never read, which -Werror rejects. */
+  UINTN elsewhere=0;BOOLEAN onTarget=FALSE;
+#endif
   EFI_GRAPHICS_OUTPUT_MODE_INFORMATION physical={0},forwarded={0};BOOLEAN forwarding=FALSE;
   EFI_STATUS status=Gu.bs->LocateHandleBuffer(ByProtocol,&GopGuid,NULL,&count,&handles);
   GuLog("GOP enumeration: status=%#llx handles=%zu\n",(unsigned long long)status,(size_t)count);
@@ -104,7 +110,14 @@ static BOOLEAN DisplayCheck(VOID) {
     /* Machine assertion: no physical GOP may sit on the target BDF; the
        console must never live on the card being unlocked (RUN01-03: the
        target has no GOP; the two observed paths are the display GPU and
-       the ASPEED BMC). */
+       the ASPEED BMC).
+
+       One card may be pinned as the exception (GPU0, the display adapter):
+       its row carries display_may_sit_on_target_gop. Even then the refusal
+       is not deleted - the GOP is accepted here and the whole check then
+       additionally requires that at least one OTHER physical GOP survives,
+       which is exactly "the console does not depend on the card being
+       unlocked". A rig where this GPU is the only display path still fails. */
     if(!EFI_ERROR(status) && path) {
       EFI_DEVICE_PATH_PROTOCOL *rem=path;EFI_HANDLE par=NULL;
       if(!EFI_ERROR(Gu.bs->LocateDevicePath(&PciGuid,&rem,&par)) && par) {
@@ -117,7 +130,19 @@ static BOOLEAN DisplayCheck(VOID) {
 #endif
             if(s2==GU_TARGET_SEGMENT && b2==GU_TARGET_BUS &&
                d2==GU_TARGET_DEVICE && f2==GU_TARGET_FUNCTION) {
-              GuLog("GOP[%u] sits on target BDF - refuse\n",(unsigned)i);valid=FALSE;break;
+#if defined(GU_MULTI_TARGET)
+              if(GU_TARGET_DISPLAY_MAY_SIT) {
+                GuLog("GOP[%u] sits on target BDF - permitted by the pin, the console must survive elsewhere\n",(unsigned)i);
+                onTarget=TRUE;
+              } else
+#endif
+              {
+                GuLog("GOP[%u] sits on target BDF - refuse\n",(unsigned)i);valid=FALSE;break;
+              }
+            } else {
+#if defined(GU_MULTI_TARGET)
+              elsewhere++;
+#endif
             }
           }
         }
@@ -155,8 +180,23 @@ static BOOLEAN DisplayCheck(VOID) {
       forwarded.PixelsPerScanLine==physical.PixelsPerScanLine;
     GuLog("GOP console forwarded AMD match=%u\n",match);valid=valid && (match || GU_DISPLAY_LOG_ONLY);
   }
-  GuFree(handles);GuLog("GOP result: valid=%u amd_physical=%zu\n",valid,(size_t)intel);
-  return valid && intel>=(GU_DISPLAY_LOG_ONLY?2:1) && (intel==1 || GU_DISPLAY_LOG_ONLY) && GuLogReady();
+  GuFree(handles);
+  /* The per-card rule. For an ordinary card the console must live on two
+     physical GOPs and never on the target BDF, exactly as RUN01-03 verified.
+     For the one display-permitted card the stronger property takes over: the
+     card may own a GOP, but the console must still exist somewhere else, so
+     "unlock the only display path" remains impossible. After the driver
+     release that card's own GOP may be gone, and this rule still holds. */
+#if defined(GU_MULTI_TARGET)
+  BOOLEAN enough=(GU_TARGET_DISPLAY_MAY_SIT ? (elsewhere>=1) :
+                  (intel>=(GU_DISPLAY_LOG_ONLY?2:1) && (intel==1 || GU_DISPLAY_LOG_ONLY)));
+  GuLog("GOP result: valid=%u amd_physical=%zu elsewhere=%zu on_target=%u\n",valid,(size_t)intel,(size_t)elsewhere,(unsigned)onTarget);
+#else
+  BOOLEAN enough=intel>=(GU_DISPLAY_LOG_ONLY?2:1) && (intel==1 || GU_DISPLAY_LOG_ONLY);
+  GuLog("GOP result: valid=%u amd_physical=%zu\n",valid,(size_t)intel);
+#endif
+  if(!enough)GuLog("GOP result: the console would not survive this card - refuse\n");
+  return valid && enough && GuLogReady();
 }
 static EFI_STATUS ReadConfig(UINT32 *Config) {
   for(UINTN i=0;i<64;i++)if(EFI_ERROR(GuConfigRead(EfiPciIoWidthUint32,(UINT32)i*4,&Config[i]))) {

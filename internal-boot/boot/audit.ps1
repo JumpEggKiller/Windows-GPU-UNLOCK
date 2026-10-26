@@ -131,16 +131,24 @@ Need 'app_io.c' $appIo 'HANDOFF.ST'
 # The USB-only walk must survive for builds that are neither internal nor automatic.
 Need 'app_io.c' $appIo 'MSG_USB_DP'
 
-# The card that drives the console must stay excluded, and the display gate must stay.
+# Four cards are unlocked, including the display adapter. What must survive is the
+# *shape* of the safety rule, not the old exclusion: GPU0 is the only row carrying the
+# display exception, it executes last, and the refusal itself is still in the source.
 $targets = Read-Source 'unlock\targets_local.h'
-if ($targets -notmatch 'GU_CARD\(\s*"GPU0"[^)]*?FALSE') {
-  [void]$failures.Add('targets_local.h: GPU0 must keep UnlockAllowed FALSE')
+if ($targets -notmatch 'GU_CARD\(\s*"GPU0"[^)]*?TRUE\s*,\s*TRUE\s*\)') {
+  [void]$failures.Add('targets_local.h: GPU0 must be unlockable and carry the display exception')
+}
+if ($targets -match 'GU_CARD\(\s*"(GPU1|GPU2|GPU3)"[^)]*?TRUE\s*,\s*TRUE\s*\)') {
+  [void]$failures.Add('targets_local.h: only GPU0 may carry the display exception')
 }
 Need 'targets_local.h' $targets 'GU_DISPLAY_LOG_ONLY 1'
 Need 'targets_local.h' $targets 'GU_BAR0_BASE 0ULL'
 
 $guard = Read-Source 'unlock\app.c' + (Read-Source 'unlock\checks.c')
 Need 'app.c/checks.c' $guard 'sits on target BDF'
+Need 'app.c' (Read-Source 'unlock\app.c') 'the console must survive elsewhere'
+Need 'app.c' (Read-Source 'unlock\app.c') 'the console would not survive this card - refuse'
+Need 'targets.c' (Read-Source 'unlock\targets.c') 'two cards could each blank the console'
 
 # --- install scripts ----------------------------------------------------------
 
@@ -269,5 +277,5 @@ Write-Host '  handoff: hash-then-execute, one Windows start, stop instead of res
 Write-Host '  flow: any non-success stops the handoff'
 Write-Host '  record: GUH1, lower-case hex, every card unlocked and retained'
 Write-Host '  media: exact partition GUID, GPT, one hard-drive node'
-Write-Host '  child: automatic batch authorization, record written, GPU0 still disallowed'
+Write-Host '  child: automatic batch authorization, record written, four cards including the display adapter'
 exit 0

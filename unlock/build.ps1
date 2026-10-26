@@ -52,7 +52,7 @@ try {
  $targetRows=@()
  if($MultiTarget){
   $joined=(Get-Content -Raw -LiteralPath 'targets_local.h') -replace '\\\r?\n',' '
-  $pattern='GU_CARD\(\s*"([^"]*)"\s*,\s*(\d+)\s*,\s*(0x[0-9A-Fa-f]+)U?\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(0x[0-9A-Fa-f]+)U?\s*,\s*(0x[0-9A-Fa-f]+)U?\s*,\s*"([0-9a-f]*)"\s*,\s*(TRUE|FALSE)\s*\)'
+  $pattern='GU_CARD\(\s*"([^"]*)"\s*,\s*(\d+)\s*,\s*(0x[0-9A-Fa-f]+)U?\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(0x[0-9A-Fa-f]+)U?\s*,\s*(0x[0-9A-Fa-f]+)U?\s*,\s*"([0-9a-f]*)"\s*,\s*(TRUE|FALSE)\s*,\s*(TRUE|FALSE)\s*\)'
   foreach($m in [regex]::Matches($joined,$pattern)){
    # Normalise the hex fields so the manifest reads the way the source does. Keeping the raw
    # '0x41' text next to integer Device/Function made every consumer print '0x0x41'.
@@ -63,7 +63,8 @@ try {
     Bus=$busHex;Device=[int]$m.Groups[4].Value;Function=[int]$m.Groups[5].Value;
     Subsystem=$subHex;ConfigC8=$c8Hex;
     PromSha256=$(if($m.Groups[8].Value){$m.Groups[8].Value}else{'<unpinned: probe only>'});
-    UnlockAllowed=($m.Groups[9].Value -eq 'TRUE')}
+    UnlockAllowed=($m.Groups[9].Value -eq 'TRUE');
+    DisplayMaySitOnTargetGop=($m.Groups[10].Value -eq 'TRUE')}
   }
   if($targetRows.Count -eq 0){throw 'targets_local.h defines no parsable GU_CARD rows'}
   $declared=([regex]::Matches($joined,'GU_CARD\(')).Count
@@ -92,6 +93,7 @@ try {
   Targets=$(if($MultiTarget){$targetRows}else{$null});
   TargetCount=$(if($MultiTarget){$targetRows.Count}else{$null});
   EligibleExpected=$(if($MultiTarget){($targetRows | Where-Object {$_.UnlockAllowed}).Count}else{$null});
+  DisplayException=$(if($MultiTarget){($targetRows | Where-Object {$_.DisplayMaySitOnTargetGop} | ForEach-Object {$_.Name}) -join ','}else{$null});
   DeviceMemorySize='0x6000';HardwareTested=$false;
   EfiSha256=(Get-FileHash -LiteralPath "$out/$name.EFI" -Algorithm SHA256).Hash;
   Headers=@(Get-ChildItem -LiteralPath . -Recurse -File -Filter '*.h' | Where-Object {$_.FullName -notlike '*\build\*'} | Sort-Object FullName | ForEach-Object {[ordered]@{Path=$_.FullName.Substring($PSScriptRoot.Length+1);Sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash}});

@@ -47,6 +47,9 @@ $guardNeedles=@(
   @('GuTargetCurrent\(\)->PromSha256','per-card PROM pin in PromCheck'),
   @('GuTargetCurrent\(\)->ConfigC8','per-card config[0xc8] pin in ConfigCheck'),
   @('GOP\[%u\] sits on target BDF','DisplayCheck per-card GOP refusal'),
+  @('GuTargetCurrent\(\)->DisplayMaySitOnTargetGop','the display exception is read from the card row'),
+  @('sits on target BDF - permitted by the pin','the display exception names the surviving console'),
+  @('the console would not survive this card - refuse','the console-survival refusal is compiled in'),
   @('PHASE A PREFLIGHT','multi-target phase A present')
 )
 foreach($needle in $guardNeedles){

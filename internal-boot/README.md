@@ -13,7 +13,7 @@ It is an adaptation of the upstream `internal-boot` work in
 
 | upstream | this tree | why |
 | --- | --- | --- |
-| one RTX 3090 at `01:00.0` | three cards: `41:00.0`, `81:00.0`, `C1:00.0`, plus `01:00.0` held back | the rig has four GM102 cards and only three may be unlocked |
+| one RTX 3090 at `01:00.0` | four cards: `41:00.0`, `81:00.0`, `C1:00.0`, and `01:00.0` last | the rig has four GM102 cards and all four are unlocked; the display adapter carries an explicit, gated exception |
 | AMD iGPU owns the console | ASPEED BMC GOP + the card at `01:00.0` own the console | there is no AMD iGPU on this board, so the upstream GOP-release stage would blank the operator console |
 | `full-release.c` detaches the RTX display driver and restores decode bits | not ported at all | the console lives on the card that must stay untouched; per-card driver release already happens inside the transaction |
 | profile pin: ASUS TUF B650M, BIOS 3057 | profile pin: GIGABYTE MZ32-AR0-00, BIOS `M31` | `Configure.ps1` refuses any other board |
@@ -21,9 +21,13 @@ It is an adaptation of the upstream `internal-boot` work in
 | unlock success is the child's return code | unlock success is a `HANDOFF.ST` record that the wrapper parses and cross-checks | a return code is not evidence that the cards are still unlocked at the end of the batch |
 | unlock child must run from USB | unlock child may run from an internal ESP, and in automatic mode only from the configured internal ESP | the whole point is to boot from disk |
 
-`GU0` (`01:00.0`) keeps `UnlockAllowed = FALSE`. Nothing in this tree relaxes that, and
-`DisplayCheck` still refuses any GOP that sits on a target BDF, which is the check that
-protects the card that drives the screen.
+`GPU0` (`01:00.0`) is the display adapter and the only card allowed to own a GOP of its own.
+That is not a blanket relaxation: its row is the single row carrying
+`DisplayMaySitOnTargetGop`, `GuTargetTableCheck` refuses a second such row, and `DisplayCheck`
+still refuses any GOP sitting on a target BDF for every other card and still refuses GPU0
+unless a second physical GOP (the ASPEED one) survives - so "unlock the only display path on
+this machine" stays impossible. GPU0 also runs last, so the console can never take an earlier
+card's log with it: every step is in the file log, which does not depend on the console.
 
 ## The two EFI layers
 

@@ -26,6 +26,12 @@ typedef struct {
   UINT32 ConfigC8;           /* config[0xc8], measured per card; 0 = unpinned */
   const char *PromSha256;    /* 1 MiB PROM hash, measured per card; "" = unpinned */
   BOOLEAN UnlockAllowed;     /* FALSE = read-only probe for this card, always */
+  /* TRUE only for a card that owns a GOP of its own and may still be unlocked.
+     DisplayCheck refuses any GOP sitting on the target BDF by default; this pin
+     is the one exception, and it is granted only while at least one other
+     physical GOP stays usable, so the console never ends up only on the card
+     that is being taken apart. */
+  BOOLEAN DisplayMaySitOnTargetGop;
 } GU_TARGET;
 
 extern const GU_TARGET GuTargets[];
@@ -52,3 +58,5 @@ BOOLEAN GuTargetTableValid(VOID);
 #define GU_BOARD_SUBSYSTEM (GuTargetCurrent()->Subsystem)
 #define GU_PROM_SHA256_LOCAL (GuTargetCurrent()->PromSha256)
 #define GU_CONFIG_C8_PIN (GuTargetCurrent()->ConfigC8)
+/* TRUE only for the card whose own GOP the display gate may tolerate. */
+#define GU_TARGET_DISPLAY_MAY_SIT (GuTargetCurrent()->DisplayMaySitOnTargetGop)

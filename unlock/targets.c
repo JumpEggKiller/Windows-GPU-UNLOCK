@@ -4,8 +4,8 @@
 #include "targets.h"
 #include "targets_local.h"
 
-#define GU_CARD_EXPAND(Name, Seg, Bus, Dev, Fun, Sub, C8, Prom, Allowed) \
-  { (Name), (Seg), (Bus), (Dev), (Fun), (Sub), (C8), (Prom), (Allowed) },
+#define GU_CARD_EXPAND(Name, Seg, Bus, Dev, Fun, Sub, C8, Prom, Allowed, MaySit) \
+  { (Name), (Seg), (Bus), (Dev), (Fun), (Sub), (C8), (Prom), (Allowed), (MaySit) },
 
 const GU_TARGET GuTargets[] = {GU_CARD_TABLE(GU_CARD_EXPAND)};
 const UINTN GuTargetCount = sizeof(GuTargets) / sizeof(GuTargets[0]);
@@ -35,9 +35,13 @@ BOOLEAN GuTargetPinned(const GU_TARGET *Target) {
 }
 
 /* Fail closed on a malformed table: a duplicated BDF would make two cards look
-   like one identity, which is exactly the mistake this port must not make. */
+   like one identity, which is exactly the mistake this port must not make.
+   The display exception is policed here too, because a second display-permitted
+   row would mean two cards could each blank the console, and a display-permitted
+   row that may not be unlocked is a pin mistake that must not pass silently. */
 BOOLEAN GuTargetTableCheck(const GU_TARGET *Table, UINTN Count) {
   BOOLEAN Allowed = FALSE;
+  UINTN DisplayPermitted = 0;
   UINTN I, J;
   if (Table == NULL || Count == 0 || Count > GU_TARGET_MAX) return FALSE;
   for (I = 0; I < Count; ++I) {
@@ -46,6 +50,10 @@ BOOLEAN GuTargetTableCheck(const GU_TARGET *Table, UINTN Count) {
     if (A->Segment != 0 || A->Bus > 0xffU || A->Device > 0x1fU || A->Function > 7U) return FALSE;
     if (A->Subsystem == 0) return FALSE;
     if (A->UnlockAllowed) Allowed = TRUE;
+    if (A->DisplayMaySitOnTargetGop) {
+      if (!A->UnlockAllowed) return FALSE;
+      if (++DisplayPermitted > 1) return FALSE;
+    }
     for (J = I + 1; J < Count; ++J) {
       const GU_TARGET *B = &Table[J];
       if (A->Segment == B->Segment && A->Bus == B->Bus && A->Device == B->Device &&

@@ -175,8 +175,15 @@ anything above 3600, and reads the value back to prove it stuck.
 - Secure Boot, BitLocker, Fast Startup is *temporarily* set to 0 in moment 2 and restored by the
   recovery command (`-RestoreWindowsFirst`), nothing else.
 - Strata: no file, task or config touched. See §7.
-- No VBIOS flash, no `UnlockAllowed` change: GPU0 stays `FALSE`, and `DisplayCheck` still refuses
-  any GOP that sits on a target BDF.
+- No VBIOS flash. GPU0 (`01:00.0`, the display adapter) is the fourth unlocked card on the
+  owner's instruction, and the display rule changed in exactly one place: `DisplayCheck` still
+  refuses any GOP sitting on a target BDF, except for the single row that pins
+  `DisplayMaySitOnTargetGop` — and even then it requires a second physical GOP (the ASPEED BMC)
+  to survive, so a rig whose only display path is the target card is still refused, and
+  `GuTargetTableCheck` refuses a second such row. GPU0 runs last in the batch; disconnecting its
+  firmware driver may blank the UEFI console for the rest of that boot, the file log on `S:` is
+  unaffected, and Windows re-initialises the card. Detail: `internal-boot/README.md` and the
+  comment above `GU_CARD_TABLE`.
 
 ## 4. Rollback, three levels
 
@@ -210,7 +217,7 @@ hides the first failure.
   It prints `HANDOFF STOPPED. No reset and no automatic retry.` and spins. No second attempt.
 - Windows is started only if the child left `\RTX3090-UNLOCK\HANDOFF.ST` reading
   `GUH1 0000000000000000 <eligible> <unlocked> <retained> <clean>` with all four counts equal to
-  the expected 3 — i.e. three cards unlocked **and** still unlocked **and** clean after the batch.
+  the expected 4 — i.e. four cards unlocked **and** still unlocked **and** clean after the batch.
   A card that dropped out is refused here even if the child returned success.
 - The record is deleted at child start, so an earlier boot's clean record can never authorize
   this one.
@@ -222,7 +229,7 @@ hides the first failure.
 | gate | action | pass criterion |
 |---|---|---|
 | B | review this document, `-Check`, `-Plan`, `install\rehearse-bcd.ps1` | reviewer accepts; `-Check` READY; rehearsal 18/18; all four commands PASS |
-| C | moment 1, then a **full shutdown and power-on** (not a restart), wait for the Windows boot menu and pick **Windows GPU UNLOCK Manual** by hand | console: `internal-handoff-v1`, three cards `unlocked=1 retained=1 clean=1`, `FINAL(multi) status=0`, Windows **without reset**; then `nvidia-smi` 3 cards `OK`, driver 617.42, no code 43 |
+| C | moment 1, then a **full shutdown and power-on** (not a restart), wait for the Windows boot menu and pick **Windows GPU UNLOCK Manual** by hand | console: `internal-handoff-v1`, four cards `unlocked=1 retained=1 clean=1`, `FINAL(multi) status=0`, Windows **without reset**; then `nvidia-smi` 4 cards `OK`, driver 617.42, no code 43 |
 | D | moment 2, one real cold boot, hands off | menu 5 s → auto unlock → Windows; same three-card evidence; `S:\RTX3090-UNLOCK\BOOTnn.TXT` exists; `-Check` says `automatic armed yes` |
 | E | second cold boot | identical; plus unplug the keyboard and USB and confirm it still boots; then `-RestoreWindowsFirst` and confirm `boot menu default` is the Windows loader again and Windows-first works |
 
@@ -241,7 +248,7 @@ cutover record (`D6E5D66E…` vs `D5A7E5A9…`), although `engine-nofill\strata.
 (`1EF38726…`), and nothing is listening on port 18144 right now (an engine 0.1.50 A/B instance is
 running instead).
 
-Gate D as scoped for this round is therefore judged on: **three cards unlocked, driver healthy,
+Gate D as scoped for this round is therefore judged on: **four cards unlocked, driver healthy,
 Windows booted without a reset.** Bringing Strata back automatically needs a separate, approved
 production change (add a trigger that writes `{"action":"restore"}` for `sup_task.ps1`).
 
