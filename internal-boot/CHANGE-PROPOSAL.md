@@ -84,6 +84,12 @@ Effect: the Windows menu gains a **second** entry, **behind** Windows. A normal 
 unchanged and still boots Windows first after 30 s — neither the timeout nor the **default
 entry** is touched in this step, so an unattended boot is bit-for-bit what it was before.
 
+One correction established by running it: `/copy {bootmgr}` also registers the copy as a
+**firmware** boot option, so `{fwbootmgr}` gains a fifth identifier (last, behind `{bootmgr}`),
+and the firmware boot menu lists "Windows GPU UNLOCK Manual" too. `{bootmgr}` stays first, so
+unattended behaviour is unchanged, and `bcdedit /delete <entry> /f` removes the BCD entry *and*
+its firmware option in one step — measured, not assumed.
+
 Before writing, the installer refuses to continue unless: it is elevated, Secure Boot is off,
 `C:` is fully decrypted, the firmware default is still `{bootmgr}`, the Windows menu still has
 a Windows fallback, the dedicated ESP still matches its recorded GUID/offset/size/FAT32, the

@@ -178,6 +178,12 @@ or `Staged file is older than the build: …`; re-run the staging command above 
 This does **not** touch `default` or `timeout`: after it, an unattended boot is exactly what it
 was before. `-Check` should still print `boot menu default {469011d3-…}` (the Windows loader).
 
+One side effect worth knowing before you run it: `bcdedit /copy {bootmgr}` also makes the copy a
+**firmware** boot option, so `{fwbootmgr}` gains a fifth identifier and the firmware boot menu
+will list "Windows GPU UNLOCK Manual" as well. `{bootmgr}` still comes first there, so an
+unattended power-on is unaffected, and `bcdedit /delete <entry> /f` removes both the BCD entry
+and the firmware option — that is what `-RestoreWindowsFirst` and the rollback below rely on.
+
 Then a real power cycle — **not** `shutdown /r`:
 
 ```powershell
