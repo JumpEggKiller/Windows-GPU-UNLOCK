@@ -1,0 +1,25 @@
+ownership: records=6 exclusive=0 status=0x800000000000000f
+ownership: records=6 exclusive=0 status=0
+driver release: status=0 refresh=0 same_pci=1
+ownership: records=3 exclusive=1 status=0
+ownership: records=6 exclusive=0 status=0x800000000000000f
+ownership: records=6 exclusive=0 status=0
+driver release: status=0 refresh=0 same_pci=1
+ownership: records=3 exclusive=1 status=0
+ownership: records=6 exclusive=0 status=0x800000000000000f
+ownership: records=6 exclusive=0 status=0
+driver release: status=0 refresh=0 same_pci=1
+ownership: records=3 exclusive=1 status=0
+ownership: records=9 exclusive=0 status=0x800000000000000f
+ownership: records=9 exclusive=0 status=0
+release: child 0x7db96d98 accepted by the display pin at record 5
+release: child 0x7dcc5c18 accepted by the display pin at record 6
+driver release: status=0 refresh=0 same_pci=1
+ownership: records=4 exclusive=1 status=0
+FOUR-CARD STATUS TABLE
+status[0] name=GPU3 bdf=0:c1:0.0 pinned=1 eligible=1 released=1 unlocked=1 retained=1 clean=1 result=0 note=clean
+status[1] name=GPU1 bdf=0:41:0.0 pinned=1 eligible=1 released=1 unlocked=1 retained=1 clean=1 result=0 note=clean
+status[2] name=GPU2 bdf=0:81:0.0 pinned=1 eligible=1 released=1 unlocked=1 retained=1 clean=1 result=0 note=clean
+status[3] name=GPU0 bdf=0:1:0.0 pinned=1 eligible=1 released=1 unlocked=1 retained=1 clean=1 result=0 note=clean
+batch summary: eligible=4 attempted=4 unlocked=4 retained=4 of 4 targets
+FINAL(multi) status=0 stage=transaction targets=4 console_fault=0 log_defects=0
