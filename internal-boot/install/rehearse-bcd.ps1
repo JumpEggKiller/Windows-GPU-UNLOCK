@@ -92,7 +92,9 @@ try {
   # The default entry is what an unattended power-on starts. Read it verbosely so this is a raw
   # identifier, not the {current}/{default} alias that a plain enumeration prints.
   $state.DefaultBefore = Get-BootDefault (Offline @('/enum','{bootmgr}','/v')).Text
-
+  # The firmware order is a separate element in the same store; keep its text so the
+  # firmware-first rehearsal below can move the unlock entry in front and put it back.
+  $state.FirmwareBefore = (Offline @('/enum','{fwbootmgr}')).Text
   Check 'the copy reports a Windows entry to keep in the menu' {
     if (-not $state.WindowsAlias) { throw 'the copy lists no displayorder' }
     # The guard signals refusal by throwing, so success is simply "it returned".
@@ -283,6 +285,43 @@ try {
   Check 'the live boot store is untouched' {
     $liveAfter = LiveEnum 'all'
     if ($liveAfter -ne $liveBefore) { throw 'the live store changed while rehearsing' }
+  }
+
+  # --- firmware order -------------------------------------------------------
+  # The unattended route on this machine is the firmware's own order, because bootmgfw
+  # refuses an image built here (0x7B, 0x221, 0x428 on the real machine). The grammar is
+  # rehearsed on the scratch store: the firmware order is its own element, its positions
+  # are read back, and the unlock entry can be moved in front and put back.
+  Check 'the firmware order can put the unlock entry in front of the boot manager' {
+    $fwBefore = Get-BootOrder $state.FirmwareBefore
+    if ($fwBefore -notcontains '{bootmgr}') { throw 'the real firmware order lost {bootmgr}' }
+    $fwDesired = @($state.NewId) + @($fwBefore | Where-Object { $_ -ne $state.NewId })
+    $result = Offline (@('/set', '{fwbootmgr}', 'displayorder') + $fwDesired)
+    if ($result.Exit -ne 0) { throw ('firmware displayorder failed: ' + $result.Text) }
+    $fwNow = Get-BootOrder (Offline @('/enum', '{fwbootmgr}')).Text
+    if ($fwNow.Count -ne $fwDesired.Count) { throw ('firmware order has {0} entries, expected {1}' -f $fwNow.Count, $fwDesired.Count) }
+    if ($fwNow[0] -ne $state.NewId) { throw ('the firmware starts {0} first' -f $fwNow[0]) }
+    if ($fwNow -notcontains '{bootmgr}') { throw 'the firmware order dropped the Windows boot manager' }
+    # A guard proof on the same data: an order that starts with the unlock image and then
+    # omits {bootmgr} is exactly what the machine must never be left with.
+    try {
+      Assert-FirmwareOrderKeepsWindows -Identifiers @($state.NewId)
+      throw 'the guard accepted a firmware order without the Windows boot manager'
+    } catch {
+      if ($_.Exception.Message -notmatch 'without the Windows boot manager') { throw }
+    }
+    Assert-FirmwareOrderKeepsWindows -Identifiers $fwNow
+  }
+
+  Check 'the firmware order can be put back to what it was' {
+    $result = Offline (@('/set', '{fwbootmgr}', 'displayorder') + (Get-BootOrder $state.FirmwareBefore))
+    if ($result.Exit -ne 0) { throw ('restoring the firmware order failed: ' + $result.Text) }
+    $fwNow = Get-BootOrder (Offline @('/enum', '{fwbootmgr}')).Text
+    $fwBefore = Get-BootOrder $state.FirmwareBefore
+    if ($fwNow.Count -ne $fwBefore.Count) { throw 'the firmware order did not come back' }
+    for ($i = 0; $i -lt $fwBefore.Count; $i++) {
+      if ($fwNow[$i] -ne $fwBefore[$i]) { throw ('firmware position {0} is {1}, was {2}' -f $i, $fwNow[$i], $fwBefore[$i]) }
+    }
   }
 } finally {
   if (Test-Path -LiteralPath $work) {

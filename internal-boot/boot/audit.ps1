@@ -219,6 +219,16 @@ Need 'automatic-policy.ps1' $policy 'Refusing to set a default that is not in th
 Need 'automatic-policy.ps1' $policy 'Boot default did not stick'
 Need 'automatic-policy.ps1' $policy 'function Get-AutomaticArmed'
 Need 'automatic-policy.ps1' $policy 'the boot default is {0}, not the unlock entry'
+# The unattended route on this machine is the firmware order, because the boot manager
+# refuses an image built here (0xC000007B, 0xC0000221, 0xC0000428 on the real machine).
+Need 'automatic-policy.ps1' $policy 'function Assert-FirmwareOrderKeepsWindows'
+Need 'automatic-policy.ps1' $policy 'function Set-FirmwareOrder'
+Need 'automatic-policy.ps1' $policy 'Refusing to write a firmware order without the Windows boot manager'
+Need 'automatic-policy.ps1' $policy 'Firmware order did not stick'
+Need 'Install.ps1' $install 'function Invoke-EnableFirmwareBoot'
+Need 'Install.ps1' $install 'firmware order -> unlock image before the boot manager'
+Need 'Install.ps1' $install 'firmware: Windows boot manager first'
+Need 'Install.ps1' $install 'the firmware starts'
 Need 'test-automatic-policy.ps1' (Read-Source 'internal-boot\install\test-automatic-policy.ps1') 'being first in the menu is not enough to be armed'
 
 # The rehearsal must only ever write to a scratch hive under the temp directory, and it
@@ -231,6 +241,8 @@ Need 'rehearse-bcd.ps1' $rehearsal 'the live boot store is untouched'
 Need 'rehearse-bcd.ps1' $rehearsal 'That is the live store'
 Need 'rehearse-bcd.ps1' $rehearsal 'a copied entry can legally become the boot default'
 Need 'rehearse-bcd.ps1' $rehearsal 'not enough to be armed'
+Need 'rehearse-bcd.ps1' $rehearsal 'the firmware order can put the unlock entry in front of the boot manager'
+Need 'rehearse-bcd.ps1' $rehearsal 'the firmware order can be put back to what it was'
 Forbid 'rehearse-bcd.ps1' $rehearsal "bcdedit @('/set'"
 Forbid 'rehearse-bcd.ps1' $rehearsal "bcdedit @('/copy'"
 

@@ -232,19 +232,40 @@ shows anything else, the file was loaded and the message is ours: read `S:\RTX30
 ## Step 4 — Gate D/E: arm automatic boot, then two cold boots
 
 ```powershell
-.\Install.ps1 -EnableAutomaticBoot -ConfirmedManualSuccess
-.\Install.ps1 -Check      # must say: automatic armed yes, boot menu default <the unlock entry>
+.\Install.ps1 -EnableFirmwareBoot -ConfirmedManualSuccess
+.\Install.ps1 -Check      # must say: firmware starts <the unlock entry> first
 ```
-This sets `default` to the unlock entry, puts it first in the menu, sets the menu timeout to 5 s
-and turns Fast Startup off. All four are required and are verified read-back; if any of them
-fails the whole promotion is rolled back. **`default` is the field that decides what an
-untouched power-on starts** — menu position alone does not, which is exactly the defect this
-step exists to avoid.
 
-Then: full power-off → power-on with no keyboard, and repeat once more for repeatability.
-Two independent human escape hatches on every boot: press a key inside the 5-second Windows menu
-and pick the Windows entry, or let the unlock image start and press Esc inside its own 3-second
-window (it then starts Windows without unlocking anything).
+Automatic boot on this machine is the **firmware** order, not a Windows menu row: three cold
+boots proved the Windows boot manager refuses an image built here (`0xC000007B`, then
+`0xC0000221`, then `0xC0000428` — untrusted signature), while the firmware runs the same bytes.
+`-EnableFirmwareBoot` therefore does exactly three things, each read back and each rolled back
+automatically if its verification fails:
+
+```text
+bcdedit /set <entry> path \EFI\WindowsGPUUnlock\AUTO.EFI
+bcdedit /set <entry> description "Windows GPU UNLOCK Auto"
+bcdedit /set {fwbootmgr} displayorder <entry> {bootmgr} <the rest, unchanged>
+```
+
+The Windows menu's own `default`, `displayorder` and `timeout` are deliberately **not** touched:
+the firmware decides before any Windows code runs, so they no longer decide anything at
+power-on. `-EnableAutomaticBoot` (the menu route) is kept in the scripts as a documented dead
+end; on this rig it never reaches the image.
+
+Then: **full shutdown** (`shutdown /s /t 0`, or the power button) → power on with no keyboard,
+and repeat once more for repeatability. A warm restart (`shutdown /r`) is not a valid Gate D
+test: with `hiberfil.sys` present it can resume instead of running the firmware path.
+
+Two independent human escape hatches on every boot: at POST press the firmware boot-menu key and
+pick the Windows boot manager (Boot0000 — nothing on disk changes by doing that), or let the
+unlock image start and press Esc inside its own 5-second window (the wrapper then starts Windows
+Boot Manager without unlocking anything), or Esc again inside the child's 3-second window.
+
+If a run fails, Gate D option A applies: the wrapper stops with
+`HANDOFF STOPPED. No reset and no automatic retry.` The machine waits there; power off, then
+either pick Boot0000 at POST or clear the order with
+`.\Install.ps1 -RestoreWindowsFirst` from Windows.
 
 
 ## Rollback, in one command each

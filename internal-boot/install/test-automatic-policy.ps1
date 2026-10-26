@@ -308,6 +308,46 @@ Check 'a verbose enumeration breaks attribution because the boot manager loses i
   Expect { [void](Resolve-NewBootCopy -BeforeText $before -AfterText $after -Name $name) } 'is missing from the enumeration'
 }
 
+# The firmware order is what decides an unattended power-on now that the Windows boot
+# manager refuses the image (0xC000007B, then 0xC0000221, then 0xC0000428 on this machine).
+# These are guard checks on a pure function: no boot store is written.
+Check 'an empty firmware order is refused' {
+  Expect { Assert-FirmwareOrderKeepsWindows -Identifiers @() } 'empty firmware order'
+}
+Check 'a firmware order without the Windows boot manager is refused' {
+  Expect { Assert-FirmwareOrderKeepsWindows -Identifiers @($newId) } 'without the Windows boot manager'
+  Expect { Assert-FirmwareOrderKeepsWindows -Identifiers @($newId,'{389ada0e-ce4b-11f1-b410-806e6f6e6963}') } 'without the Windows boot manager'
+}
+Check 'the real firmware order passes the guard once the unlock image is moved in front' {
+  $real=@(
+    '{bootmgr}',
+    '{389ada0e-ce4b-11f1-b410-806e6f6e6963}',
+    '{469011d0-a872-11f1-bb02-ea6b3138fbbe}',
+    '{b8f7edf7-ceaf-11f1-b411-806e6f6e6963}'
+  )
+  $moved=@($newId) + $real
+  try { Assert-FirmwareOrderKeepsWindows -Identifiers $moved }
+  catch { Fail ('the guard refused a legal firmware order: ' + $_.Exception.Message) }
+  if($moved.Count -ne ($real.Count + 1)){Fail 'the promoted firmware order lost an entry'}
+  if($moved[0] -ne $newId){Fail 'the promoted firmware order does not start with the unlock image'}
+  if($moved -notcontains '{bootmgr}'){Fail 'the promoted firmware order dropped the Windows boot manager'}
+}
+Check 'the firmware order parser keeps positions and lowercases identifiers' {
+  $text=@(
+    'Firmware Boot Manager'
+    '--------------------'
+    'identifier              {fwbootmgr}'
+    'displayorder            {93DC5615-D0F2-11F1-B41F-18C04D0C6177}'
+    '                        {bootmgr}'
+    '                        {389ada0e-ce4b-11f1-b410-806e6f6e6963}'
+    'timeout                 2'
+  ) -join "`r`n"
+  $order=Get-BootOrder $text   # do not wrap in @(): it returns a non-enumerated array
+  if($order.Count -ne 3){Fail ("expected 3 firmware entries, got {0}" -f $order.Count)}
+  if($order[0] -ne '{93dc5615-d0f2-11f1-b41f-18c04d0c6177}'){Fail ("position 0 is {0}" -f $order[0])}
+  if($order[1] -ne '{bootmgr}'){Fail ("position 1 is {0}" -f $order[1])}
+}
+
 Write-Host ''
 if($script:failed -gt 0) {
   Write-Host ("FAILED {0} of {1} automatic-policy checks" -f $script:failed,($script:passed+$script:failed))

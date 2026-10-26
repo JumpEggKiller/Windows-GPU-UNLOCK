@@ -174,6 +174,40 @@ function Set-BootOrder {
   }
 }
 
+# The firmware's own boot order is a different store from the Windows boot manager's menu:
+# it decides which load option the machine tries before any Windows code runs. The firmware
+# only executes entries it already knows, so this reorders the list and never creates an
+# entry. Dropping the Windows boot manager from the list would leave a machine that cannot
+# start Windows at all, so that is refused here rather than discovered at the next power-on.
+# The two ways a firmware order can leave the machine unable to start Windows, kept as a
+# pure guard so the host suite can prove them without writing to any real boot store (the
+# same shape as Assert-OrderKeepsWindows).
+function Assert-FirmwareOrderKeepsWindows {
+  param([Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Identifiers)
+  if($Identifiers.Count -eq 0){throw 'Refusing to write an empty firmware order'}
+  if(($Identifiers -notcontains '{bootmgr}') -and ($Identifiers -notcontains '{current}')){
+    throw 'Refusing to write a firmware order without the Windows boot manager: the machine could then not start Windows at all'
+  }
+}
+
+function Set-FirmwareOrder {
+  param([Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Identifiers)
+  Assert-FirmwareOrderKeepsWindows -Identifiers $Identifiers
+  $output=& bcdedit @(@('/set','{fwbootmgr}','displayorder') + $Identifiers) 2>&1
+  if($LASTEXITCODE -ne 0){
+    throw ("bcdedit /set {{fwbootmgr}} displayorder failed (exit {0}): {1}" -f $LASTEXITCODE,($output|Out-String).Trim())
+  }
+  $readBack=Get-BootOrder ((& bcdedit @('/enum','{fwbootmgr}') 2>&1)|Out-String)
+  if($readBack.Count -ne $Identifiers.Count){
+    throw ("Firmware order did not stick: asked for {0} entries, read back {1}" -f $Identifiers.Count,$readBack.Count)
+  }
+  for($i=0;$i -lt $Identifiers.Count;$i++){
+    if($readBack[$i] -ne ([string]$Identifiers[$i]).ToLowerInvariant()){
+      throw ("Firmware order did not stick: position {0} is {1}, asked for {2}" -f $i,$readBack[$i],$Identifiers[$i])
+    }
+  }
+}
+
 # Sets the Windows Boot Manager menu timeout and proves it read back. The timeout is what
 # an unattended boot waits before the first entry starts, so it must be small but non-zero:
 # zero would remove the only way to pick Windows instead of the unlock.

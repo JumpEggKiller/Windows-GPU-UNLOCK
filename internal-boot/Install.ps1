@@ -9,12 +9,16 @@
 #   .\Install.ps1 -Assets <dir> -RegisterManual  add the Manual entry, Windows stays first
 #   .\Install.ps1 -EnableAutomaticBoot -ConfirmedManualSuccess
 #                                               make the Automatic entry boot first
+#   .\Install.ps1 -EnableFirmwareBoot -ConfirmedManualSuccess
+#                                               let the FIRMWARE try the unlock image
+#                                               before the Windows boot manager
 #   .\Install.ps1 -RestoreWindowsFirst          put {bootmgr} back first; deletes nothing
 param(
   [string]$Assets,
   [switch]$RegisterManual,
   [switch]$EnableAutomaticBoot,
   [switch]$ConfirmedManualSuccess,
+  [switch]$EnableFirmwareBoot,
   [switch]$RestoreWindowsFirst,
   [switch]$Check,
   [switch]$Plan,
@@ -496,6 +500,20 @@ function Invoke-RestoreWindowsFirst {
         }
       }}
     [pscustomobject]@{Name='Windows first';Run={Set-BootOrder $desired}}
+    # The firmware order is the other half of "Windows first": an unlock option left in
+    # front of {bootmgr} would keep the machine out of Windows no matter what the menu says.
+    [pscustomobject]@{Name='firmware: Windows boot manager first'
+      Run={
+        $fw=Get-BootOrder (Invoke-Bcd @('/enum','{fwbootmgr}'))
+        if($fw.Count -gt 0 -and $fw[0] -ne '{bootmgr}'){
+          Set-FirmwareOrder (@('{bootmgr}') + @($fw|Where-Object {$_ -ne '{bootmgr}'}))
+        }
+      }}
+    [pscustomobject]@{Name='clear a one-shot firmware boot sequence'
+      Run={
+        try { [void](Invoke-Bcd @('/deletevalue','{fwbootmgr}','bootsequence')) }
+        catch { Write-Warning $_.Exception.Message }
+      }}
     [pscustomobject]@{Name='restore Fast Startup'
       Run={if($null -ne $state.HiberbootBefore){Set-Hiberboot -Value ([int]$state.HiberbootBefore)}}}
     [pscustomobject]@{Name='restore boot timeout'
@@ -522,10 +540,96 @@ function Invoke-RestoreWindowsFirst {
   if((Get-BootDefault (Invoke-Bcd @('/enum','{bootmgr}','/v'))) -eq $entry){
     Fail 'Verification failed: the unlock entry is still the boot default'
   }
+  $firmware=Get-BootOrder (Invoke-Bcd @('/enum','{fwbootmgr}'))
+  if($firmware[0] -ne '{bootmgr}'){
+    Fail ("Verification failed: the firmware starts {0} first, not {{bootmgr}}" -f $firmware[0])
+  }
   $state.Mode='restored-windows-first'
   $state|Add-Member -NotePropertyName RestoredUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
   $state|ConvertTo-Json -Depth 6|Set-Content -LiteralPath $stateFile -Encoding UTF8
   Write-Host 'Windows first restored. Files on the dedicated ESP were left in place and nothing was rebooted.'
+}
+
+# Automatic boot on this machine cannot go through the Windows Boot Manager: its PE loader
+# refuses an image built here (0xC000007B, then 0xC0000221, then 0xC0000428 on the real
+# machine). The firmware's own loader runs the same bytes without complaint, so the
+# unattended trigger is the firmware order: try the unlock image before {bootmgr}. The
+# Windows Boot Manager keeps its own default and timeout, untouched, because it is no
+# longer what decides anything at power-on.
+function Invoke-EnableFirmwareBoot {
+  param($Targets)
+  if(!$ConfirmedManualSuccess){
+    Fail 'Boot the unlock image by hand from the firmware boot menu first; then pass -ConfirmedManualSuccess'
+  }
+  if(!(Test-Path -LiteralPath $stateFile)){
+    Fail 'No install state: run -RegisterManual first so the entry and its backups exist'
+  }
+  $state=Get-Content -Raw -LiteralPath $stateFile|ConvertFrom-Json
+  $entry=([string]$state.EntryId).ToLowerInvariant()
+  if($entry -notmatch '^\{[0-9a-f-]{36}\}$'){Fail ('The saved entry id is not a concrete identifier: {0}' -f $entry)}
+  $text=Invoke-Bcd @('/enum','all')
+  if($null -eq (Get-BootEntryBlock $text $entry)){Fail 'The registered entry no longer exists; register it again before enabling firmware boot'}
+  Assert-ManualEntryUsable -Text $text -Identifier $entry -DriveLetter $Targets.Letter
+
+  $firmwareBefore=Get-BootOrder (Invoke-Bcd @('/enum','{fwbootmgr}'))
+  if($firmwareBefore -notcontains '{bootmgr}'){
+    Fail 'The firmware order does not list {bootmgr}: enabling this would leave no way to start Windows'
+  }
+  if($firmwareBefore -notcontains $entry){
+    Fail ('The firmware does not list {0}. The firmware option is created when the entry is registered; re-register and retry' -f $entry)
+  }
+  # Neither of these may be hiding behind the change we are about to make.
+  if((Get-BootDefault (Invoke-Bcd @('/enum','{bootmgr}','/v'))) -eq $entry){
+    Fail 'The unlock entry is still the Windows boot manager default; restore Windows-first before enabling firmware boot'
+  }
+  $sequencePresent=([string](Invoke-Bcd @('/enum','{fwbootmgr}')) -match '(?mi)^\s*bootsequence\s')
+  if($sequencePresent){Fail 'A one-shot firmware boot sequence is already set; clear it so the new order is the only thing under test'}
+  $backup=New-BootBackup
+  $desiredFirmware=@($entry) + @($firmwareBefore|Where-Object {$_ -ne $entry})
+
+  # Fast Startup is deliberately not touched: the firmware order runs before bootmgfw, so a
+  # hybrid shutdown cannot skip the unlock image.
+  $steps=@(
+    [pscustomobject]@{Name='entry path -> automatic handoff'
+      Run={[void](Invoke-Bcd @('/set',$entry,'path','\EFI\WindowsGPUUnlock\AUTO.EFI'))}}
+    [pscustomobject]@{Name='entry description'
+      Run={[void](Invoke-Bcd @('/set',$entry,'description','Windows GPU UNLOCK Auto'))}}
+    [pscustomobject]@{Name='firmware order -> unlock image before the boot manager'
+      Run={Set-FirmwareOrder $desiredFirmware}}
+  )
+  $verify={
+    $now=Get-BootOrder (Invoke-Bcd @('/enum','{fwbootmgr}'))
+    if($now.Count -ne $desiredFirmware.Count){
+      Fail ("Verification failed: the firmware order has {0} entries, expected {1}" -f $now.Count,$desiredFirmware.Count)
+    }
+    if($now[0] -ne $entry){
+      Fail ("Verification failed: the firmware starts {0} first, not the unlock image" -f $now[0])
+    }
+    if($now -notcontains '{bootmgr}'){
+      Fail 'Verification failed: {bootmgr} left the firmware order'
+    }
+    $path=Get-BootEntryField (Invoke-Bcd @('/enum','all')) $entry 'path'
+    if($path -ne '\EFI\WindowsGPUUnlock\AUTO.EFI'){
+      Fail ("Verification failed: the entry path reads '{0}', expected the automatic handoff" -f $path)
+    }
+  }
+  $rollback=@(
+    [pscustomobject]@{Name='restore the firmware order';Run={Set-FirmwareOrder $firmwareBefore}}
+    [pscustomobject]@{Name='restore the manual path'
+      Run={[void](Invoke-Bcd @('/set',$entry,'path','\EFI\WindowsGPUUnlock\MANUAL.EFI'))}}
+    [pscustomobject]@{Name='restore the manual description'
+      Run={[void](Invoke-Bcd @('/set',$entry,'description','Windows GPU UNLOCK Manual'))}}
+  )
+  Invoke-AutomaticTransition -Steps $steps -Verify $verify -Rollback $rollback
+
+  $state.Mode='firmware-first'
+  $state|Add-Member -NotePropertyName FirmwareOrderBefore -NotePropertyValue @($firmwareBefore|ForEach-Object {[string]$_}) -Force
+  $state|Add-Member -NotePropertyName FirmwareBackupRoot -NotePropertyValue $backup -Force
+  $state|Add-Member -NotePropertyName FirmwareFirstUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
+  $state|ConvertTo-Json -Depth 6|Set-Content -LiteralPath $stateFile -Encoding UTF8
+  Write-Host ('Firmware now tries {0} before the Windows boot manager.' -f $entry)
+  Write-Host 'Power off completely and power on: no key is needed. The wrapper waits 5 seconds for Esc,'
+  Write-Host 'the child waits 3 more, then it unlocks and starts Windows Boot Manager directly.'
 }
 
 # --- readiness --------------------------------------------------------------
@@ -591,6 +695,22 @@ function Invoke-Readiness {
             -Timeout $timeout -Hiberboot (Get-Hiberboot) -ExpectedTimeout $script:automaticTimeout
           if($armed.Armed){$notes+='automatic armed      yes (default, first entry, timeout and Fast Startup all match)'}
           else {$problems+=('Automatic boot is registered but not armed: ' + ($armed.Reasons -join '; '))}
+        }
+        # Firmware-first is a different question: the firmware order decides, so the Windows
+        # menu order and its default are irrelevant and must not be reported as blockers.
+        if($stateForArm.Mode -eq 'firmware-first'){
+          $fwOrder=Get-BootOrder (Invoke-Bcd @('/enum','{fwbootmgr}'))
+          $fwEntry=([string]$stateForArm.EntryId).ToLowerInvariant()
+          if($fwOrder.Count -gt 0 -and $fwOrder[0] -eq $fwEntry){
+            $notes+=('firmware starts      {0} first (the unlock image runs before Windows)' -f $fwEntry)
+          } elseif($fwOrder -notcontains $fwEntry){
+            $problems+=('The firmware order does not list {0}, so the unlock image would never run' -f $fwEntry)
+          } else {
+            $problems+=('The firmware starts {0} first, not the unlock image' -f $fwOrder[0])
+          }
+          if($fwOrder -notcontains '{bootmgr}'){
+            $problems+='The firmware order does not list {bootmgr}: Windows could not be started from the firmware menu'
+          }
         }
       }
     } catch {$problems+=('Cannot read the boot order: ' + $_.Exception.Message)}
@@ -675,12 +795,34 @@ function Write-InstallPlan {
   '  rollback: path -> MANUAL.EFI, description -> Manual, order -> previous, default -> previous,'
   '            timeout -> previous, HiberbootEnabled -> previous'
   ''
+  '  NOTE: on this machine the Windows boot manager cannot start the unlock image at all:'
+  '        its loader answered 0xC000007B, then 0xC0000221, then 0xC0000428 (untrusted'
+  '        signature) to the same bytes the firmware runs without complaint. So the promotion'
+  '        above is kept only as a documented dead end; -EnableFirmwareBoot is the real route.'
+  ''
+  '-EnableFirmwareBoot -ConfirmedManualSuccess'
+  '  guard:  state exists with a concrete EntryId; the entry is present with the manual'
+  '          path; the firmware order lists {bootmgr} and the entry; the entry is not the'
+  '          Windows boot manager default; no firmware bootsequence is left over'
+  '  bcdedit /set <entry> path \EFI\WindowsGPUUnlock\AUTO.EFI'
+  '  bcdedit /set <entry> description "Windows GPU UNLOCK Auto"'
+  '  bcdedit /set {fwbootmgr} displayorder <entry> {bootmgr} <the rest, unchanged>'
+  '  (the Windows menu order, its default and its timeout are NOT touched: the firmware'
+  '   decides before any Windows code runs, so they no longer decide anything at power-on)'
+  '  verify: firmware order[0]=<entry>, {bootmgr} still listed, entry path is the automatic handoff'
+  '  rollback: firmware order -> previous, path -> MANUAL.EFI (the same rollback a failed'
+  '            verification runs automatically before the error is reported)'
+  ''
   '-RestoreWindowsFirst'
   '  restore the boot default (BootDefaultBefore, else bootmgr-before.txt, else current)'
   '  set {bootmgr} displayorder to {current} + everything current, unlock entry kept behind it'
+  '  set {fwbootmgr} displayorder to {bootmgr} + everything current (firmware starts Windows again)'
+  '  clear a leftover {fwbootmgr} bootsequence'
   '  restore BootTimeoutBefore; restore HiberbootBefore'
   '  re-point the saved entry at MANUAL.EFI (description Windows GPU UNLOCK Manual)'
   '  verify order[0] is {current} and the unlock entry is not the default; nothing is deleted'
+  '  without tooling: power off, power on, press the firmware boot-menu key at POST and pick'
+  '  the Windows boot manager. Nothing on disk is changed by doing that.'
   ''
   'If the ESP GUIDs above are placeholders the plan is still printable, but the installer'
   'refuses to run: run Configure.ps1 against the real ESP first.'
@@ -693,6 +835,7 @@ if($Check){$mode+='check'}
 if($LocalStage){$mode+='localstage'}
 if($RegisterManual){$mode+='register'}
 if($EnableAutomaticBoot){$mode+='promote'}
+if($EnableFirmwareBoot){$mode+='firmware'}
 if($RestoreWindowsFirst){$mode+='restore'}
 if($mode.Count -gt 1){Fail ('Choose one action, not: ' + ($mode -join ', '))}
 
@@ -745,6 +888,7 @@ if($mode.Count -eq 0) {
 }
 if($mode -contains 'register'){Invoke-RegisterManual -Targets $targets -Files $files;return}
 if($mode -contains 'promote'){Invoke-EnableAutomatic -Targets $targets;return}
+if($mode -contains 'firmware'){Invoke-EnableFirmwareBoot -Targets $targets;return}
 
 
 

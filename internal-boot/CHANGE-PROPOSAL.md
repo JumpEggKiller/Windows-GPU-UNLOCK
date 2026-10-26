@@ -111,7 +111,14 @@ mount letter is still `S:`, all four images match their build manifests, all fiv
 `bootmgr-before.txt` (verbose, so the real default identifier is in it), `firmware-before.txt`
 and the partition map.
 
-### Moment 2 — Gate D, arm automatic boot (only after Gate C passed by hand)
+### Moment 2 — Gate D, arm automatic boot (SUPERSEDED, see Moment 3)
+
+> **This route is a dead end on this machine.** Three cold boots proved the Windows Boot Manager
+> refuses an image built here: `0xC000007B` (plain EFI application), `0xC0000221` (subsystem 16
+> without a checksum), `0xC0000428` (`无法验证此文件的数字签名`). The firmware loads the same
+> bytes without complaint, so automatic boot is the firmware order — **Moment 3** below. The
+> text here is kept because the `default`-versus-`displayorder` analysis is still correct, and
+> because `-EnableAutomaticBoot` still exists in the scripts as a documented dead end.
 
 ```powershell
 .\Install.ps1 -EnableAutomaticBoot -ConfirmedManualSuccess
@@ -167,6 +174,51 @@ unlocking. Two independent human escape hatches, no tooling.
 The 5 s timeout is deliberate and is **not** allowed to be 0: `{current}` stays in the order, so
 there is always a local, no-tooling way to boot Windows. `Set-BootTimeout` refuses 0 and
 anything above 3600, and reads the value back to prove it stuck.
+
+### Moment 3 — Gate D, the change that actually applies here: the firmware order
+
+```powershell
+.\Install.ps1 -EnableFirmwareBoot -ConfirmedManualSuccess
+```
+
+Writes exactly three things, each verified by reading it back, and rolls all three back if any
+verification fails:
+
+```
+bcdedit /set {entry} path \EFI\WindowsGPUUnlock\AUTO.EFI
+bcdedit /set {entry} description "Windows GPU UNLOCK Auto"
+bcdedit /set {fwbootmgr} displayorder {entry} {bootmgr} <the rest, unchanged>
+```
+
+Executed on 2026-10-26 and verified at the NVRAM level:
+
+```
+BootOrder = Boot0004 Boot0000 Boot0002 Boot0001 Boot0003
+  Boot0004 = \EFI\WindowsGPUUnlock\AUTO.EFI     <- the unlock image, first
+  Boot0000 = \EFI\MICROSOFT\BOOT\BOOTMGFW.EFI   <- Windows, still second
+BootNext  = (absent)
+```
+
+**What is deliberately not touched:** the Windows menu's `default`, `displayorder` and `timeout`,
+and Fast Startup. The firmware runs before any Windows code, so none of them can skip the image
+any more, and leaving them alone keeps the Windows menu exactly as the operator knows it. The
+`{fwbootmgr}` order keeps `{bootmgr}` in it — `Set-FirmwareOrder` refuses an order without it
+(`the machine could then not start Windows at all`) and compares every position after writing.
+
+**Why the firmware and not the boot manager:** an image built here can never carry a signature
+the Windows loader trusts, and the boot manager's loader is the one that enforces that. The
+firmware's own loader does not, which is how Gate C passed. This is not a weakening of any boot
+safety property: Secure Boot stays off, the firmware entry is an ordinary Boot#### variable
+alongside the four the machine already had, and deleting the entry restores the previous state.
+
+**Human escape hatches, unchanged:** at POST press the firmware boot-menu key and pick
+Boot0000 (Windows) — nothing on disk changes; or let the image start and press Esc inside its
+5-second window, then Esc again inside the child's 3-second window; or, from Windows,
+`.\Install.ps1 -RestoreWindowsFirst`.
+
+**Failure behaviour (option A, strict fail-stop):** on any failed stage the wrapper prints
+`HANDOFF STOPPED. No reset and no automatic retry.` and parks. Power off, then pick Boot0000 at
+POST or run `-RestoreWindowsFirst` after booting Windows.
 
 ## 3. What is NOT changed
 

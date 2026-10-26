@@ -95,31 +95,45 @@ a person can still choose Windows without any tooling. The firmware order is onl
 *checked*: if `{bootmgr}` is not first, the Windows menu is never reached and the
 installer refuses to arm. A zero timeout is refused for the same reason.
 
-### Automatic boot is the `default` entry, not the first menu row
+### Automatic boot is the firmware's order, not a Windows menu row
 
-`displayorder` orders the menu. What an untouched power-on starts after the timeout is the
-boot manager's **`default`** entry, and that is what automatic mode changes:
+Three cold boots established the limit of the other route: the Windows boot manager refuses an
+image built here with `0xC000007B` (plain EFI application), then `0xC0000221` (subsystem 16
+without a checksum), then `0xC0000428` (`数字签名`/untrusted signature). The same bytes run
+without complaint when the **firmware** loads them, which is how the first successful run
+(Gate C, four cards, `HANDOFF.ST` = `GUH1 0000000000000000 4 4 4 4`) happened.
+
+So the unattended trigger is the firmware order:
 
 ```
-bcdedit /set {bootmgr} default {entry}
-bcdedit /set {bootmgr} displayorder {entry} {current}
-bcdedit /set {bootmgr} timeout 5
-HiberbootEnabled = 0
+bcdedit /set {entry} path \EFI\WindowsGPUUnlock\AUTO.EFI
+bcdedit /set {entry} description "Windows GPU UNLOCK Auto"
+bcdedit /set {fwbootmgr} displayorder {entry} {bootmgr} <the rest, unchanged>
 ```
 
-All four are required. `Get-AutomaticArmed` (in `install\automatic-policy.ps1`) is the only
-place that decides "armed", and it returns the list of reasons when it is not, so neither the
-promotion, nor `-Check`, nor the tests can conclude "armed" from menu position alone — there is
-a regression test for exactly that mistake. `Set-BootDefault` refuses any identifier that is
-not a concrete entry that already exists (bcdedit itself happily accepts a dangling one) and
-reads the value back; the restore path puts the original default back and fails loudly if the
-unlock entry is still the default afterwards.
+`Set-FirmwareOrder` refuses an order that does not list `{bootmgr}` (`the machine could then not
+start Windows at all`) and reads every position back, because a silently truncated order is the
+one failure that costs the machine. Nothing else is touched: the Windows menu's own
+`default`/`displayorder`/`timeout` stay as they are, because the firmware decides before any
+Windows code runs. `-EnableFirmwareBoot` is therefore the automatic step on this machine, and
+`-EnableAutomaticBoot` is kept only as a documented dead end with `Get-AutomaticArmed` still
+proving that menu position alone is never enough.
 
-The menu timeout is what makes both halves possible: five seconds is long enough for a person
-to press a key and pick Windows, short enough that an unattended power-on is not waiting. A
-second, independent escape hatch exists inside the image itself: the wrapper waits 5 s for Esc
-before starting the child, and the child waits 3 s for Esc before touching any card. Esc at
-either point starts Windows without unlocking anything.
+### The `default` entry, and why it is not what runs here
+
+`displayorder` orders the Windows menu; what an untouched power-on starts after the timeout is
+that manager's **`default`**. `-EnableAutomaticBoot` writes exactly that,
+`bcdedit /set {bootmgr} default {entry}` plus `displayorder {entry} {current}`, `timeout 5` and
+`HiberbootEnabled = 0`, and `Get-AutomaticArmed` (in `install\automatic-policy.ps1`) is the only
+place that decides "armed" — it returns the reasons when it is not, so neither the promotion nor
+`-Check` can conclude "armed" from menu position alone, and there is a regression test for that
+mistake. This path is unusable on this rig only because the boot manager cannot load the image.
+
+The 5 s menu timeout is what makes both halves possible where the menu does apply: long enough
+for a person to press a key and pick Windows, short enough that an unattended power-on is not
+waiting. A second, independent escape hatch exists inside the image itself: the wrapper waits
+5 s for Esc before starting the child, and the child waits 3 s for Esc before touching any card.
+Esc at either point starts Windows without unlocking anything.
 
 ## Install sequence
 
