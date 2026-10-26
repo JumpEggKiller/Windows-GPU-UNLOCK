@@ -15,7 +15,7 @@ after a power cycle the card is exactly as it was until the next boot re-applies
 firmware -> our image -> detect + unlock every card -> prove it in HANDOFF.ST -> Windows
 ```
 
-## Quick start (a stranger's machine)
+## Quick start (a machine whose 3090 compute is not unlocked)
 
 ```powershell
 git clone https://github.com/JumpEggKiller/Windows-GPU-UNLOCK.git
@@ -108,7 +108,7 @@ The upstream single-machine log (measurements, the manual USB procedure, the ASU
 > **从这里开始：[ADOPT.md](ADOPT.md)** —— 一条命令、十个可续跑的步骤，英文 + 中文。
 > 本页是摘要，ADOPT.md 是流程。
 
-## 快速开始（陌生人的机器）
+## 快速开始（没有解锁 3090 算力的机器）
 
 ```powershell
 git clone https://github.com/JumpEggKiller/Windows-GPU-UNLOCK.git
