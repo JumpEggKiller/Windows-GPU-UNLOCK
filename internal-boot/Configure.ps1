@@ -10,7 +10,12 @@ param(
  [string]$UnlockDriveLetter,
  [string]$WindowsEspGuid,
  [switch]$List,
- [switch]$Development
+ [switch]$Development,
+ # The board/BIOS pair below was measured on the rig this profile came from. It is
+ # recorded and printed, not enforced: the per-card identity comes from the probe and
+ # the stock profile gate inside the unlock refuses a card whose VBIOS/GFW family does
+ # not match. Pass -StrictBoard to restore the old refusal on the measured machine.
+ [switch]$StrictBoard
 )
 $ErrorActionPreference='Stop'
 Push-Location -LiteralPath $PSScriptRoot
@@ -114,8 +119,13 @@ try {
    throw ('-WindowsEspGuid {0} does not match the IsSystem ESP on disk ({1})' -f $WindowsEspGuid,$windowsEsp[0].Guid)
   }
   $board=BoardReport
-  if($board.Product -ne $profile.Product -or $board.Bios -ne $profile.Bios) {
-   throw ('Board {0} BIOS {1} is not the measured profile {2} BIOS {3}; this build is pinned to one machine' -f
+  $boardMeasured=($board.Product -eq $profile.Product -and $board.Bios -eq $profile.Bios)
+  if(-not $boardMeasured) {
+   if($StrictBoard) {
+    throw ('Board {0} BIOS {1} is not the measured profile {2} BIOS {3}; -StrictBoard refuses it' -f
+      $board.Product,$board.Bios,$profile.Product,$profile.Bios)
+   }
+   Write-Host ('note: board {0} BIOS {1} is not the measured profile {2} BIOS {3}; recording it and continuing' -f
      $board.Product,$board.Bios,$profile.Product,$profile.Bios)
   }
   $disk=Get-Disk -Number $unlock.Disk
@@ -124,7 +134,8 @@ try {
    UnlockPartitionGuid=$unlock.Guid;WindowsPartitionGuid=$windowsEsp[0].Guid
    UnlockDiskNumber=$unlock.Disk;UnlockDiskUniqueId=[string]$disk.UniqueId
    UnlockOffset=$unlock.Offset;UnlockSize=[int64](($unlock.SizeGB)*1GB)
-   Board=$board;Profile=$profile;ConfiguredUtc=[DateTime]::UtcNow.ToString('o')
+   Board=$board;Profile=$profile;BoardMeasured=$boardMeasured
+   ConfiguredUtc=[DateTime]::UtcNow.ToString('o')
   }
   $internal=GuidInitializer $unlock.Guid
   $windows=GuidInitializer $windowsEsp[0].Guid

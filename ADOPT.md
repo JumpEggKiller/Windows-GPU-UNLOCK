@@ -46,7 +46,7 @@ generator (it reads `.tar.zst`), which is a different Python from the one that b
 
 | requirement | why |
 |---|---|
-| RTX 3090 (`10de:2204`, VBIOS `94.02.*`) | the only card family with a measured stock profile here; other cards **stop** the flow by design |
+| an RTX 3090 (`10de:2204`, VBIOS `94.02.*`) is the **measured** family | the flow still detects and records any NVIDIA card; the unlock's own stock-profile gate is what refuses a card whose VBIOS/GFW family has no measured profile. Nothing is refused by the wrapper beforehand |
 | the five firmware assets, generated once under WSL/Linux | see the recipe above; `unlock/assets.json` pins size and SHA-256 |
 | Secure Boot **off** | the image is not signed by Microsoft; an unsigned image cannot be booted with it on |
 | `C:` BitLocker **fully decrypted**, protection off | the installer refuses to run otherwise, and never changes your encryption settings |
@@ -77,7 +77,7 @@ do unless you pass `-Yes` on that call:
 
 | # | step | who does it |
 |---|---|---|
-| 1 | `check` — cards, Secure Boot, BitLocker, board | automatic |
+| 1 | `check` — finds every NVIDIA card, records its BDF / device / subsystem / VBIOS, checks Secure Boot and BitLocker | automatic |
 | 2 | `probe-build` — build the read-only probe, copy it to your stick | automatic |
 | 3 | — **boot the stick, then come back** | **you** |
 | 4 | `pins` — turn the probe report into this machine's card table | automatic |
@@ -160,7 +160,7 @@ make inputs firmware PYTHON=python3.14 INPUTS="$PWD/inputs" ASSETS="$PWD/assets"
 
 | 条件 | 原因 |
 |---|---|
-| RTX 3090（`10de:2204`，VBIOS `94.02.*`） | 这里只有这一族的实测原型；其它卡会**主动停止** |
+| RTX 3090（`10de:2204`，VBIOS `94.02.*`）是**已实测**的一族 | 流程仍会自动识别并记录任何 NVIDIA 卡；真正拒绝的只有解锁内部的同族校验（没有实测 profile 的 VBIOS/GFW 族会被拒），外壳不会提前拦下 |
 | 关闭 Secure Boot | 镜像没有微软签名，开了就启动不了 |
 | `C:` 的 BitLocker 已完全解密、保护关闭 | 否则安装器拒绝运行；它从不改你的加密设置 |
 | 管理员 PowerShell | 改启动配置和写 ESP 需要 |
@@ -189,7 +189,7 @@ cd Windows-GPU-UNLOCK
 
 | # | 步骤 | 谁做 |
 |---|---|---|
-| 1 | `check` — 显卡、Secure Boot、BitLocker、主板 | 自动 |
+| 1 | `check` — 找出所有 NVIDIA 卡，记录 BDF / 设备号 / 子系统 / VBIOS，检查 Secure Boot 与 BitLocker | 自动 |
 | 2 | `probe-build` — 构建只读探测镜像并复制到 U 盘 | 自动 |
 | 3 | — **用 U 盘启动一次，然后回来** | **你** |
 | 4 | `pins` — 把探测报告变成这台机器的显卡表 | 自动 |

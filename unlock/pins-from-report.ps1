@@ -40,8 +40,9 @@
   display_active=Enabled. Recorded policy, not a measurement.
 
 .PARAMETER AllowDevice
-  PCI device ids that may be unlocked. Default 0x2204 (RTX 3090). Anything else
-  is refused, because a different VBIOS/GFW family needs its own stock profile.
+  Optional restriction on PCI device ids. Empty by default, so the generator records
+  whatever NVIDIA cards the machine has; the unlock's own stock-profile gate decides
+  whether a card's VBIOS/GFW family is safe. Pass e.g. 0x2204 to restrict a run.
 
 .EXAMPLE
   # step 1: probe header
@@ -61,7 +62,10 @@ param(
 
   [string]$OutFile,
   [string]$DisplayBdf,
-  [int[]]$AllowDevice = @(0x2204)
+  # Empty means "whatever NVIDIA cards this machine has": the identity of each card is
+  # measured here, and the unlock keeps its own stock-profile gate, which refuses a card
+  # whose VBIOS/GFW family does not match. Pass a list only to restrict a run on purpose.
+  [int[]]$AllowDevice = @()
 )
 
 Set-StrictMode -Version Latest
@@ -112,9 +116,12 @@ function Get-GpuInventory {
     $vendor = $deviceWord -band 0xffff
     if ($vendor -ne 0x10de) { Fail ("{0} reports vendor 0x{1:x4}; only NVIDIA cards can use this profile" -f $f[4].Trim(), $vendor) }
     $subsystem = [Convert]::ToInt32(($f[3].Trim() -replace '^0x', ''), 16)
-    if ($AllowDevice -notcontains $device) {
-      Fail ("{0} is device {1:x4}; this profile only unlocks {2}. A different VBIOS/GFW family needs its own stock profile - do not force it." -f `
+    if ($AllowDevice.Count -gt 0 -and $AllowDevice -notcontains $device) {
+      Fail ("{0} is device {1:x4}; this run was restricted to {2}. A different VBIOS/GFW family needs its own stock profile - do not force it." -f `
           $f[4].Trim(), $device, (($AllowDevice | ForEach-Object { '0x{0:x4}' -f $_ }) -join ','))
+    }
+    if ($AllowDevice.Count -eq 0 -and $device -ne 0x2204) {
+      Write-Host ("note: {0} is device 0x{1:x4}, not the measured 0x2204; it is recorded as found and the unlock's own stock-profile gate decides whether its VBIOS/GFW family is safe." -f $f[4].Trim(), $device)
     }
     $cards += [pscustomobject]@{
       Index       = [int]$f[0].Trim()

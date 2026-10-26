@@ -75,7 +75,11 @@ param(
   [string]$ProbeDrive,
   [string]$Clang,
   [string]$LldLink,
-  [string]$Python = 'python'
+  [string]$Python = 'python',
+  # The stock profile names the VBIOS/GFW family the unlock is measured against. Only
+  # change it when adding a family; the unlock itself refuses a card that does not match.
+  [ValidateSet('original03100062', 'observed03000062', 'entryLatchedSs1Preserve', 'entryLatchedSs1Full')]
+  [string]$StockProfile = 'entryLatchedSs1Full'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -131,9 +135,11 @@ function Get-DerivedStage {
   $configPath = Join-Path $repo 'internal-boot\local-config.json'
   $installPath = Join-Path $repo 'internal-boot\install\state.json'
   $letter = ''
-  # The pinned card count is what the unlock acts on, so it is what a record is judged against.
+  # The pinned card count is what the unlock acts on, so it is what a record is judged
+  # against - but only once the table has been generated for THIS machine. Before that the
+  # committed table is the reference rig's and must not be read as this machine's cards.
   $tablePath = Join-Path $repo 'unlock\targets_local.h'
-  if (Test-Path -LiteralPath $tablePath) {
+  if ((Test-Path -LiteralPath $configPath) -and (Test-Path -LiteralPath $tablePath)) {
     $result.Count = @(Select-String -LiteralPath $tablePath -Pattern 'GU_CARD\(' -AllMatches).Count
   }
   if (Test-Path -LiteralPath $configPath) {
@@ -218,19 +224,19 @@ function Invoke-Step([string]$Script, [string[]]$Arguments, [string]$Label) {
 
 # ---------------------------------------------------------------- inventory facts
 function Get-GpuInventory {
-  $raw = & nvidia-smi --query-gpu=index,pci.bus_id,pci.device_id,pci.sub_device_id,name,display_active --format=csv,noheader 2>&1
+  $raw = & nvidia-smi --query-gpu=index,pci.bus_id,pci.device_id,pci.sub_device_id,name,vbios_version,display_active --format=csv,noheader 2>&1
   if ($LASTEXITCODE -ne 0) { throw ('nvidia-smi failed: ' + ($raw | Out-String).Trim()) }
   $cards = @()
   foreach ($line in @($raw)) {
     if (-not $line -or $line -notmatch ',') { continue }
     $f = $line -split ','
-    if ($f.Count -lt 6) { continue }
+    if ($f.Count -lt 7) { continue }
     $idw = [Convert]::ToInt32(($f[2].Trim() -replace '^0x', ''), 16)
     $cards += [pscustomobject]@{
       Index = [int]$f[0].Trim(); Bdf = $f[1].Trim().ToLowerInvariant()
       Device = ($idw -shr 16) -band 0xffff; Vendor = $idw -band 0xffff
       Subsystem = $f[3].Trim().ToLowerInvariant(); Name = $f[4].Trim()
-      Display = ($f[5].Trim() -eq 'Enabled')
+      Vbios = $f[5].Trim(); Display = ($f[6].Trim() -eq 'Enabled')
     }
   }
   if (-not $cards) { throw 'nvidia-smi reported no GPUs' }
@@ -292,9 +298,6 @@ function Step-Check($State) {
   $cards = Get-GpuInventory
   foreach ($c in $cards) {
     if ($c.Vendor -ne 0x10de) { throw ("{0} is not an NVIDIA card" -f $c.Name) }
-    if ($c.Device -ne 0x2204) {
-      throw ("{0} is device 0x{1:x4}; this profile only covers RTX 3090 (0x2204). Stop here - a different VBIOS/GFW family needs its own profile." -f $c.Name, $c.Device)
-    }
   }
   if ($cards.Count -gt 4) { throw ("{0} cards found; this build pins at most 4" -f $cards.Count) }
   if ($cards.Count -ne @($cards | ForEach-Object { $_.Bdf } | Sort-Object -Unique).Count) { throw 'two cards report the same PCI address' }
@@ -307,8 +310,20 @@ function Step-Check($State) {
   $bios = (Get-CimInstance Win32_BIOS).SMBIOSBIOSVersion
   Say ("cards: {0}  ({1})" -f $cards.Count, (($cards | ForEach-Object { $_.Bdf + $(if ($_.Display) { '*' } else { '' }) }) -join ' ')) `
       ("显卡：{0} 张（* 为显示卡）" -f $cards.Count)
-  Say ("board {0} / BIOS {1} - the installer must be told to accept it: edit `$profile in internal-boot\Configure.ps1 if this is your first run" -f $board, $bios) `
-      ("主板 {0} / BIOS {1} —— 首次运行需要在 internal-boot\Configure.ps1 的 `$profile 里写入这两个值" -f $board, $bios)
+  foreach ($c in $cards) {
+    Say ("  {0} {1} device 0x{2:x4} subsystem {3} VBIOS {4}{5}" -f $c.Bdf, $c.Name, $c.Device, $c.Subsystem, $c.Vbios, $(if ($c.Display) { '  <- display' } else { '' })) `
+        ("  {0} {1} 设备 0x{2:x4} 子系统 {3} VBIOS {4}{5}" -f $c.Bdf, $c.Name, $c.Device, $c.Subsystem, $c.Vbios, $(if ($c.Display) { '  <- 显示卡' } else { '' }))
+  }
+  # Nothing here refuses a card: the identity of each card is measured by the probe, and the
+  # unlock's own stock-profile gate is the thing that decides whether a VBIOS/GFW family is
+  # safe. Only the vendor, Secure Boot and the encryption state are preconditions.
+  $odd = @($cards | Where-Object { $_.Device -ne 0x2204 -or $_.Vbios -notlike '94.02.*' })
+  if ($odd.Count -gt 0) {
+    Say ("note: {0} card(s) are outside the measured family (RTX 3090 0x2204, VBIOS 94.02.*). The flow continues; the unlock keeps its own gate and will refuse a card whose VBIOS/GFW family does not match, with a log on the ESP." -f $odd.Count) `
+        ("提示：{0} 张卡不在实测族内（RTX 3090 0x2204、VBIOS 94.02.*）。流程继续；解锁内部的同族校验仍会拒绝不匹配的卡，并在 ESP 上留下日志。" -f $odd.Count)
+  }
+  Say ("board {0} / BIOS {1} (recorded; a different board is no longer refused)" -f $board, $bios) `
+      ("主板 {0} / BIOS {1}（只记录；换主板不再拒绝）" -f $board, $bios)
   $State.Cards = @($cards | ForEach-Object { [pscustomobject]@{ Bdf = $_.Bdf; Subsystem = $_.Subsystem; Display = $_.Display } })
   $State.Count = $cards.Count
   Advance $State 'probe-build' ('{0} cards, board {1} BIOS {2}' -f $cards.Count, $board, $bios)
@@ -396,7 +411,7 @@ function Step-Configure($State) {
 function Step-Build($State) {
   $clang = Get-ToolPath $Clang 'clang.exe'
   $lld = Get-ToolPath $LldLink 'lld-link.exe'
-  Invoke-Step (Join-Path $builtin 'Build.ps1') @('-Clang', $clang, '-LldLink', $lld, '-Python', $Python, '-ExpectedUnlocked', [string]$State.Count) 'build four images'
+  Invoke-Step (Join-Path $builtin 'Build.ps1') @('-Clang', $clang, '-LldLink', $lld, '-Python', $Python, '-ExpectedUnlocked', [string]$State.Count, '-StockProfile', $StockProfile) 'build four images'
   Advance $State 'stage' 'four images built and verified'
 }
 

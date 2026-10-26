@@ -1,61 +1,155 @@
-# Windows GPU UNLOCK
+# Windows GPU UNLOCK — unlock your RTX 30-series cards before Windows starts
 
-> **Start here / 从这里开始: [ADOPT.md](ADOPT.md)** — the one-command path for a new machine, English and 中文.
-> It generates the per-card pins from a probe boot instead of hand-editing them, and it checks
-> every refusal the hard way. The Korean text below is the original single-machine research log.
+A UEFI application that runs **before** Windows, unlocks the factory power/virtualization
+limits on every card it finds, **proves** the result from a file on disk, and then starts
+Windows without a reset. The unlock is volatile: it is re-done on every cold boot, on purpose.
 
-RTX 3090의 Windows Tensor 연산 성능 향상을 확인한 UEFI 실험 코드와 재현 가이드입니다. [rough2515-hub/rtx3080-unlock-public](https://github.com/rough2515-hub/rtx3080-unlock-public/tree/a08254d269af30ace9e57237abd3d8e6c261e8f5)의 RTX 3080 포트를 바탕으로 RTX 3090 24GiB / AMD 내장그래픽 환경에 맞췄습니다. 원천 코어는 [Zagitta/gpu-unlock](https://github.com/Zagitta/gpu-unlock/tree/0ebdb1c6308b6a2072be5bf04513472942541956)입니다.
+> **Start here / 从这里开始: [ADOPT.md](ADOPT.md)** — one command, ten resumable steps,
+> English and 中文. This page is the summary; ADOPT.md is the procedure.
 
-**핵심: 언락 성공 후 재부팅하지 않고 Windows Boot Manager로 이어서 부팅합니다.** ASUS에서 `Save Changes & Reset`을 누르면 다시 초기화될 수 있습니다. 이번 성공 사례는 `Boot Override → Windows Boot Manager`를 사용했습니다.
+```
+firmware -> our image -> detect + unlock every card -> prove it in HANDOFF.ST -> Windows
+```
 
-## 실제 측정 결과
+## Quick start (a stranger's machine)
 
-2026-10-20, 동일한 CUDA 12.6 / cuBLAS 12.6 실행 파일로 각각 3회 실행한 중앙값입니다. NVIDIA Windows 드라이버 **617.14를 교체하지 않았습니다**.
+```powershell
+git clone https://github.com/JumpEggKiller/Windows-GPU-UNLOCK.git
+cd Windows-GPU-UNLOCK
 
-| 항목 | 이전 경로 TFLOPS | 리셋 없이 Windows 진입 TFLOPS | 변화 |
-|---|---:|---:|---:|
-| FP32 pedantic | 24.505702 | 24.890281 | +1.57% |
-| FP16 Tensor / FP32 누산 | 70.548081 | 125.907816 | +78.47% |
-| BF16 Tensor / FP32 누산 | 70.529545 | 128.699728 | +82.48% |
+.\Adopt.ps1                 # what stage am I in, and what is next (bilingual)
+.\Adopt.ps1 -Next           # run the next step
+```
 
-이전 측정도 UEFI에서 언락 성공을 보고한 뒤의 값입니다. 미적용 콜드부팅 기준을 별도로 통제한 실험은 아닙니다. 사용자가 이전에는 BIOS에서 Reset했고 이번에는 Boot Override로 리셋 없이 진입했다고 확인했습니다. 결과는 부팅 인계 문제가 원인이었다는 가설을 강하게 뒷받침하지만, 다른 모든 원인을 배제하는 실험은 아닙니다. ComfyUI·게임 향상률과 장시간 안정성은 별도 검증이 필요합니다. [측정 원자료와 한계](docs/RESULTS.ko.md).
+`-Next` runs one step and prints exactly what to do next. Two steps end with "now reboot and
+come back"; two steps write boot configuration and refuse to unless you add `-Yes` on that
+call. `.\Adopt.ps1 -Restore` puts Windows back in front at any time and deletes nothing.
 
-## 먼저 지원 조건 확인
+## What it detects itself
 
-**현재 실행 코드는 특정 PC에 고정된 실험 포트입니다. 모든 RTX 3090이나 RTX 30 시리즈에서 그대로 실행되는 범용 프로그램이 아닙니다.** 다른 시스템에서는 검사가 거부되는 것이 정상일 수 있습니다. 검사를 삭제하거나 숫자만 자신의 GPU 값으로 바꿔 실행하지 마세요.
+* **how many cards** exist, and which one drives the display (`nvidia-smi`)
+* each card's **BDF, device id, subsystem, VBIOS version**
+* each card's **VBIOS PROM SHA-256 and `config[0xc8]`**, from one read-only probe boot
+* the **dedicated ESP** and the **Windows ESP** identities, and the firmware boot order
 
-검증 환경:
+There is **no board or VBIOS whitelist any more**. The board/BIOS is recorded and printed, not
+enforced. Any NVIDIA card is inventoried and pinned; the flow does not stop at detection time.
 
-- NVIDIA RTX 3090 24GiB: PCI `10de:2204`, subsystem `10de:1454`, BDF `0000:01:00.0`.
-- ASUS TUF GAMING B650M-PLUS WIFI, AMD Ryzen 7 7800X3D.
-- AMD 내장그래픽 PCI `1002:164e`, subsystem `1043:8877`. 모니터는 메인보드 출력에 연결.
-- Windows 11 Home build 26200, NVIDIA 617.14.
-- x64 UEFI, Secure Boot 꺼짐, FAT32 USB.
-- 프로필 `entryLatchedSs1Full`: SS0 `0x88888888`, SS1 `0x8`.
-- PROM 해시·BAR·GOP 경로 등 추가 고정 조건: [지원 범위](docs/COMPATIBILITY.ko.md).
+## What still refuses, and where
 
-## 따라 하기
+The refusal that matters lives **inside the unlock**, not in the wrapper: before touching a
+card it checks the observed VBIOS/GFW family against the selected stock profile (chip id,
+GUFW status words, SS0/SS1) and stops that card with a log on the ESP if the family does not
+match. That is fail-closed by design — a card with an unmeasured family is *not* unlocked, and
+Windows still starts.
 
-1. [USB 준비 가이드](docs/GUIDE.ko.md)에서 환경과 파일 구성을 확인합니다. 기존 USB 파일을 먼저 백업합니다.
-2. 공개된 EFI 또는 [직접 빌드한 EFI](docs/BUILD.ko.md)를 FAT32 USB의 `EFI/BOOT/BOOTX64.EFI`에 둡니다.
-3. 별도 준비한 펌웨어 5개를 `RTX3090-UNLOCK/ASSETS/`에 둡니다. [펌웨어 준비](docs/ASSETS.ko.md). 펌웨어는 이 저장소와 릴리스에 포함하지 않습니다.
-4. Windows 작업을 저장하고 완전히 종료한 뒤, 모니터를 메인보드에 연결한 상태로 전원을 켭니다.
-5. ASUS F8 → UEFI USB → 사전 검사 통과 → **U 한 번**.
-6. 성공과 정리 완료를 확인하고 펌웨어로 돌아오면 **F7 → Advanced Mode → Boot → Boot Override → Windows Boot Manager**.
-7. **이 사이에 F10 / Save Changes & Reset / 재부팅을 하지 않습니다.**
-8. Windows에서 GPU를 사용하는 다른 프로그램을 종료한 상태로 [동일 벤치마크](docs/BENCHMARK.ko.md)를 실행해 비교합니다.
+`-StockProfile` (default `entryLatchedSs1Full`) selects the family. Adding a new family means
+measuring it, not disabling the check.
 
-`STOP / POWER OFF` 또는 실패가 나오면 Windows로 이어서 진행하지 말고 전원을 완전히 끈 뒤 로그를 확인합니다. 같은 부팅에서 U를 반복하지 않습니다. Windows 진입까지 내장그래픽 출력을 유지하는 것이 검증된 조건입니다. 진입 후 RTX 출력으로 바꾸는 경우는 미검증입니다.
+## What only you can do
 
-## 공개 내용과 현재 한계
+1. Provide a **dedicated FAT32 ESP ≥ 1 GiB** (never the Windows ESP) and a spare UEFI stick.
+2. **Generate the five firmware assets once** under WSL/Linux (they are not in the repo for
+   licensing reasons; ADOPT.md prints the exact commands).
+3. **Boot the probe stick once**, then come back and run `-Next`.
+4. **Boot the unlock entry once by hand** and confirm the result, before it is armed.
 
-- `unlock/`, `deps/`: 실제 포트 소스, 헤더, host mock 테스트, 빌드 도구.
-- `release/`: 성공 사례 EFI와 해당 소스 연결 해시. 펌웨어는 제외.
-- `benchmark/`: 동일 측정 소스와 로컬 CUDA 12.6 준비·빌드·실행 스크립트.
-- `evidence/`: 개인정보와 원본 PROM을 제외한 측정 자료·실행 로그 발췌·해시.
-- Windows 직접 chainload와 내부 디스크 자동 부팅은 아직 구현하지 않았습니다. 현재 앱은 펌웨어로 반환합니다. 이 사례는 USB로 검증했습니다.
-- 이 저장소는 GPU VBIOS 플래싱이나 Windows 드라이버 교체를 안내하지 않습니다. 현재 실험은 사전 부팅 상태를 바꿉니다. 재시작·전원 차단 뒤에는 다시 적용하는 절차를 전제로 합니다.
+Everything else is automated, and every step is resumable.
 
-## 라이선스와 출처
+## Verified state
 
-포트·재사용 코어는 **GPL-2.0-only**이며, EDK2 및 별도 고지는 각 라이선스를 따릅니다. [LICENSE](LICENSE), [외부 코드 고지](THIRD_PARTY_NOTICES.md), [변경 기록](CHANGES.md)을 보존하세요. NVIDIA 펌웨어·드라이버·CUDA DLL은 재배포하지 않습니다.
+On the reference machine (4 × RTX 3090, GIGABYTE MZ32-AR0-00): **Gate C, D and E all PASS** —
+manual boot, first unattended cold boot, and a second unattended cold boot. Four cards
+`unlocked=1 retained=1 clean=1`, `batch summary: eligible=4 attempted=4 unlocked=4 retained=4
+of 4 targets`, `FINAL(multi) status=0`, Windows up 4 s later with driver 617.42 and no reset.
+Evidence: [`internal-boot/evidence/gate-c-2026-10-26/`](internal-boot/evidence/gate-c-2026-10-26/),
+`internal-boot/CHANGE-PROPOSAL.md`, `internal-boot/MAINTENANCE.md`.
+
+## Read before you run
+
+* The image is **unsigned**; Secure Boot must be off, and Windows Boot Manager will refuse to
+  load it (`0xC0000428`). The trigger is therefore the **firmware boot order**, not a Windows
+  menu row — this is why automatic mode needs a firmware-order change.
+* Unlocking the **display card** releases its firmware driver; the console can go dark for the
+  rest of the boot even when it succeeds. That is expected, and the proof is a file, not the screen.
+* On failure it **stops**. No reset, no retry, no forced Windows. Escape is power-off plus the
+  firmware boot menu, or the USB image.
+* Everything is reversible: `.\Adopt.ps1 -Restore`.
+
+## The original Korean research log
+
+The upstream single-machine log (measurements, the manual USB procedure, the ASUS
+`Boot Override` notes) is preserved verbatim as **[README.ko.md](README.ko.md)**.
+
+---
+
+# Windows GPU UNLOCK —— 在 Windows 启动之前解锁你的 30 系显卡
+
+一个 UEFI 应用程序：在 Windows **之前**运行，找出并解锁每张卡的出厂功耗/虚拟化限制，
+用磁盘上的文件**证明**结果，然后**不复位**直接启动 Windows。解锁是易失的，每次冷启动
+都重新做一遍，这是设计如此。
+
+> **从这里开始：[ADOPT.md](ADOPT.md)** —— 一条命令、十个可续跑的步骤，英文 + 中文。
+> 本页是摘要，ADOPT.md 是流程。
+
+## 快速开始（陌生人的机器）
+
+```powershell
+git clone https://github.com/JumpEggKiller/Windows-GPU-UNLOCK.git
+cd Windows-GPU-UNLOCK
+
+.\Adopt.ps1                 # 我现在在第几步、下一步是什么（中英对照）
+.\Adopt.ps1 -Next           # 跑下一步
+```
+
+`-Next` 只跑一步，并明确告诉你下一步做什么。只有两步要求“重启再回来”；只有两步会写启动
+配置，**不加 `-Yes` 就不写**。`.\Adopt.ps1 -Restore` 随时把 Windows 恢复成第一个，什么都不删。
+
+## 它会自己检测什么
+
+* **有几张卡**，以及哪一张在驱动显示器（`nvidia-smi`）
+* 每张卡的 **BDF、设备号、子系统、VBIOS 版本**
+* 每张卡的 **VBIOS PROM SHA-256 与 `config[0xc8]`**（来自一次只读探测启动）
+* **专用 ESP** 与 **Windows ESP** 的身份，以及固件启动顺序
+
+**不再有主板或 VBIOS 白名单。** 主板/BIOS 只记录并打印，不再拒绝。任何 NVIDIA 卡都会被
+盘点并写入卡表，流程不会在“识别”阶段停下。
+
+## 仍会拒绝的地方
+
+真正说不的是**解锁内部**，不是外壳：动卡之前，它把实测的 VBIOS/GFW 族与所选 stock profile
+比对（芯片 id、GUFW 状态字、SS0/SS1），族不匹配就**不解锁这张卡**，并在 ESP 上留下日志。
+这是 fail-closed：族未实测的卡不会被解锁，但 Windows 照常启动。
+
+`-StockProfile`（默认 `entryLatchedSs1Full`）用来选择族。新增一族意味着**去实测它**，
+而不是关掉校验。
+
+## 只有你能做的四件事
+
+1. 准备一个**专用 FAT32 ESP（≥ 1 GiB，绝不能用 Windows 的 ESP）**和一个空 U 盘。
+2. 在 WSL/Linux 上**生成一次五个固件资源**（因授权原因不在仓库里，ADOPT.md 会打印确切命令）。
+3. **用 U 盘探测启动一次**，回来再跑 `-Next`。
+4. **手动冷启动解锁项一次**并确认结果，之后才允许固化。
+
+其余全自动，每一步都可续跑。
+
+## 已验证状态
+
+参考机（4 × RTX 3090，技嘉 MZ32-AR0-00）：**Gate C、D、E 全部 PASS** —— 手动启动、第一次
+无人值守冷启动、第二次无人值守冷启动。四张卡 `unlocked=1 retained=1 clean=1`，
+`batch summary: eligible=4 attempted=4 unlocked=4 retained=4 of 4 targets`，
+`FINAL(multi) status=0`，4 秒后 Windows 起来，驱动 617.42，全程无复位。
+
+## 运行前必须知道
+
+* 镜像**没有签名**：Secure Boot 必须关；Windows Boot Manager 会拒绝加载它（`0xC0000428`）。
+  所以触发器是**固件启动顺序**，不是 Windows 菜单项 —— 这就是自动化模式需要改固件顺序的原因。
+* 解锁**显示卡**会释放它的固件驱动，控制台可能在这一轮启动里黑掉（即使成功）。这是预期行为，
+  证据是文件不是屏幕。
+* 失败就**停住**：不重启、不重试、不强推 Windows。逃生方式是断电 + 主板启动菜单，或 U 盘镜像。
+* 一切可逆：`.\Adopt.ps1 -Restore`。
+
+## 原始韩文研究记录
+
+上游的单机记录（测量数据、U 盘手动流程、ASUS `Boot Override` 记录）原样保留在
+**[README.ko.md](README.ko.md)**。

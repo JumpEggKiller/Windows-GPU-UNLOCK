@@ -10,7 +10,12 @@ param(
  [string]$Clang='clang',
  [string]$LldLink='lld-link',
  [string]$Python='python',
- [int]$ExpectedUnlocked=4
+ [int]$ExpectedUnlocked=4,
+ # The stock profile names the VBIOS/GFW family the unlock expects. It is a property of
+ # the cards, not of the board, so it is a parameter: a different family needs its own
+ # profile, and the unlock refuses to run when the card on the bench does not match.
+ [ValidateSet('original03100062','observed03000062','entryLatchedSs1Preserve','entryLatchedSs1Full')]
+ [string]$StockProfile='entryLatchedSs1Full'
 )
 $ErrorActionPreference='Stop'
 Push-Location -LiteralPath $PSScriptRoot
@@ -26,7 +31,7 @@ try {
  $childManual=Join-Path $childDir 'RTX3090-MULTI-EXPERIMENTAL-entryLatchedSs1Full-INTERNAL.EFI'
  $childAuto=Join-Path $childDir 'automatic\RTX3090-MULTI-EXPERIMENTAL-entryLatchedSs1Full-INTERNAL-AUTO.EFI'
  $childArgs=@{Clang=$Clang;LldLink=$LldLink;Python=$Python;MultiTarget=$true;ExperimentalUnlock=$true
-  StockProfile='entryLatchedSs1Full';InternalBoot=$true}
+  StockProfile=$StockProfile;InternalBoot=$true}
 
  $unlockBuild=Join-Path $repo 'unlock\build.ps1'
  & $unlockBuild @childArgs
@@ -74,6 +79,8 @@ try {
   BuiltUtc=[DateTime]::UtcNow.ToString('o')
   Placeholder=[bool]$config.Placeholder
   ExpectedUnlocked=$ExpectedUnlocked
+  StockProfile=$StockProfile
+  BoardMeasured=$config.BoardMeasured
   UnlockPartitionGuid=$config.UnlockPartitionGuid
   WindowsPartitionGuid=$config.WindowsPartitionGuid
   Artifacts=$artifacts
