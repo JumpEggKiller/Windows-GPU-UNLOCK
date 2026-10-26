@@ -1,5 +1,9 @@
 # Windows GPU UNLOCK
 
+> **Start here / 从这里开始: [ADOPT.md](ADOPT.md)** — the one-command path for a new machine, English and 中文.
+> It generates the per-card pins from a probe boot instead of hand-editing them, and it checks
+> every refusal the hard way. The Korean text below is the original single-machine research log.
+
 RTX 3090의 Windows Tensor 연산 성능 향상을 확인한 UEFI 실험 코드와 재현 가이드입니다. [rough2515-hub/rtx3080-unlock-public](https://github.com/rough2515-hub/rtx3080-unlock-public/tree/a08254d269af30ace9e57237abd3d8e6c261e8f5)의 RTX 3080 포트를 바탕으로 RTX 3090 24GiB / AMD 내장그래픽 환경에 맞췄습니다. 원천 코어는 [Zagitta/gpu-unlock](https://github.com/Zagitta/gpu-unlock/tree/0ebdb1c6308b6a2072be5bf04513472942541956)입니다.
 
 **핵심: 언락 성공 후 재부팅하지 않고 Windows Boot Manager로 이어서 부팅합니다.** ASUS에서 `Save Changes & Reset`을 누르면 다시 초기화될 수 있습니다. 이번 성공 사례는 `Boot Override → Windows Boot Manager`를 사용했습니다.

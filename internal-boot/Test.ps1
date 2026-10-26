@@ -81,6 +81,18 @@ try {
   [void]$failed.Add('source audit')
 }
 
+# A bilingual script saved without a UTF-8 BOM is read as ANSI by Windows PowerShell 5.1,
+# which turns every Chinese literal into mojibake and can break the parser outright. That is
+# invisible in an editor and fatal for a stranger running the script, so it is checked.
+Section 'script encoding: bilingual scripts stay readable by Windows PowerShell 5.1'
+try {
+  & (Join-Path $here 'install\test-encoding.ps1')
+  if ($LASTEXITCODE -ne 0) { [void]$failed.Add('script encoding') }
+} catch {
+  Write-Host ('FAIL script encoding: {0}' -f $_.Exception.Message)
+  [void]$failed.Add('script encoding')
+}
+
 # The unlock child's own suite is the proven multi-target one; run it too so a change
 # here cannot silently break the transaction it drives.
 Section 'unlock child: local test suite'

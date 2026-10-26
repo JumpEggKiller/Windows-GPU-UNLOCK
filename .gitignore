@@ -27,3 +27,6 @@ __pycache__/
 *.key
 *.pem
 internal-boot/install/state.json
+# per-machine state written by Adopt.ps1 and by the pin generator
+adopt-state.json
+unlock/targets_local.h.before-adopt
