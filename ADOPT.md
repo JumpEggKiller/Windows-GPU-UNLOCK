@@ -12,22 +12,42 @@ is. Each run is resumable: run it, do what it asks, run it again.
 
 ## English
 
-### What only you can do (three things, all physical)
+### What only you can do (four things)
 
 1. Have **exactly one spare FAT32 partition or USB stick** that Windows is not using — the images
    and firmware assets are staged there, never on the Windows EFI partition.
-2. **Boot the probe stick once** so the tool can read your cards' real identity (PCI address,
+2. **Generate the five firmware assets** once, on Linux or WSL, from the pinned upstream source
+   (recipe below). They are deliberately not in this repository — they are NVIDIA firmware and
+   the licensing is not ours to redistribute.
+3. **Boot the probe stick once** so the tool can read your cards' real identity (PCI address,
    subsystem, PROM fingerprint). This is read-only; it unlocks nothing.
-3. **Boot once by hand** at the end, to confirm the unlock works before the machine is allowed to
+4. **Boot once by hand** at the end, to confirm the unlock works before the machine is allowed to
    do it unattended.
 
 Everything else is the command below.
+
+### Generating the firmware assets (once per machine, not per boot)
+
+```sh
+git clone https://github.com/Zagitta/gpu-unlock.git
+git -C gpu-unlock checkout --detach 0ebdb1c6308b6a2072be5bf04513472942541956
+cd gpu-unlock
+make inputs firmware PYTHON=python3.14 INPUTS="$PWD/inputs" ASSETS="$PWD/assets"
+# copy these five out of ./assets and into this repository's assets/ folder:
+#   booter_load_ga102.bin  v67-ga102-610.43.03.bin  gsp_ga10x.bin
+#   gsp_boot_ga102.bin     gsp_boot_desc_ga102.bin
+```
+
+`unlock/assets.json` holds the exact names, sizes and SHA-256. A file that does not match is
+refused at staging time, not discovered at boot time. Python 3.14 is required by the upstream
+generator (it reads `.tar.zst`), which is a different Python from the one that builds the images.
 
 ### Prerequisites
 
 | requirement | why |
 |---|---|
 | RTX 3090 (`10de:2204`, VBIOS `94.02.*`) | the only card family with a measured stock profile here; other cards **stop** the flow by design |
+| the five firmware assets, generated once under WSL/Linux | see the recipe above; `unlock/assets.json` pins size and SHA-256 |
 | Secure Boot **off** | the image is not signed by Microsoft; an unsigned image cannot be booted with it on |
 | `C:` BitLocker **fully decrypted**, protection off | the installer refuses to run otherwise, and never changes your encryption settings |
 | admin PowerShell | boot configuration and the ESP need it |
@@ -114,11 +134,27 @@ firmware -> our image -> unlock all cards -> prove it -> start Windows Boot Mana
 
 `Adopt.ps1` 把整台机器的流程拆成十个小步骤并记住进度，随时可中断、可重跑。
 
-### 只有你能做的三件事（都要动手）
+### 只有你能做的四件事
 
 1. 准备**一个** Windows 没在用的 **FAT32 分区或 U 盘**——镜像和固件资源放这里，绝不写 Windows 的 EFI 分区。
-2. **用 U 盘启动一次**，让工具读到显卡的真实身份（PCI 地址、子系统、PROM 指纹）。这一步纯读取，不解锁任何东西。
-3. 最后**手动冷启动一次**，确认解锁真的能用，之后才允许机器自动执行。
+2. **生成那五个固件资源**（一次即可，在 Linux 或 WSL 里，见上面的命令）。它们刻意不放进仓库：那是 NVIDIA 的固件，授权不允许转发。
+3. **用 U 盘启动一次**，让工具读到显卡的真实身份（PCI 地址、子系统、PROM 指纹）。这一步纯读取，不解锁任何东西。
+4. 最后**手动冷启动一次**，确认解锁真的能用，之后才允许机器自动执行。
+
+其余都是命令。
+
+### 需要一次性的固件资源
+
+```sh
+git clone https://github.com/Zagitta/gpu-unlock.git
+git -C gpu-unlock checkout --detach 0ebdb1c6308b6a2072be5bf04513472942541956
+cd gpu-unlock
+make inputs firmware PYTHON=python3.14 INPUTS="$PWD/inputs" ASSETS="$PWD/assets"
+# 把 ./assets 里的五个 .bin 复制到本仓库的 assets/ 目录
+```
+
+`unlock/assets.json` 里有确切的名字、大小和 SHA-256。对不上的文件在**写入阶段**就被拒绝，不会等到开机才发现。
+上游生成器要 Python 3.14（它要读 `.tar.zst`），和构建镜像用的 Python 不是同一个要求。
 
 ### 前置条件
 

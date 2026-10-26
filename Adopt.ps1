@@ -123,10 +123,64 @@ function Step-Number([string]$Name) {
   ($i + 1).ToString() + '/' + $STEP_ORDER.Count
 }
 
+# The stage a machine is really in, read from what the installer and the ESP already prove.
+# Used only when adopt-state.json is absent, so an already-adopted machine is never reported
+# as untouched. Never writes.
+function Get-DerivedStage {
+  $result = [pscustomobject]@{ Step = ''; Count = 0; EntryId = ''; ManualVerified = $false; Armed = $false; UnlockDriveLetter = '' }
+  $configPath = Join-Path $repo 'internal-boot\local-config.json'
+  $installPath = Join-Path $repo 'internal-boot\install\state.json'
+  $letter = ''
+  # The pinned card count is what the unlock acts on, so it is what a record is judged against.
+  $tablePath = Join-Path $repo 'unlock\targets_local.h'
+  if (Test-Path -LiteralPath $tablePath) {
+    $result.Count = @(Select-String -LiteralPath $tablePath -Pattern 'GU_CARD\(' -AllMatches).Count
+  }
+  if (Test-Path -LiteralPath $configPath) {
+    $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+    $letter = [string]$config.UnlockDriveLetter
+    $result.UnlockDriveLetter = $letter
+    $result.Step = 'build'
+  }
+  if (Test-Path -LiteralPath $installPath) {
+    $install = Get-Content -LiteralPath $installPath -Raw | ConvertFrom-Json
+    $result.EntryId = [string]$install.EntryId
+    if ($install.Mode -eq 'firmware-first') {
+      $result.Armed = $true
+      $result.ManualVerified = $true
+      $result.Step = 'verify'
+    } elseif ($install.EntryId) {
+      $result.Step = 'manual'
+    }
+    if ($letter -and -not $result.ManualVerified) {
+      $root = $letter.TrimEnd(':') + ':\RTX3090-UNLOCK'
+      if (Test-Path -LiteralPath $root) {
+        if (@(Get-ChildItem -LiteralPath $root -Filter 'FULL*.TXT' -File -ErrorAction SilentlyContinue).Count -gt 0) {
+          $result.ManualVerified = $true
+          $result.Step = 'arm'
+        }
+      }
+    }
+  }
+  if (-not $result.Step) { $result.Step = 'check' }
+  return $result
+}
+
 function Read-State {
   if (-not (Test-Path -LiteralPath $stateFile)) {
-    return [pscustomobject]@{ Step = 'check'; Cards = @(); Count = 0; Assets = ''; UnlockDriveLetter = ''; WindowsEspGuid = '';
+    $fresh = [pscustomobject]@{ Step = 'check'; Cards = @(); Count = 0; Assets = ''; UnlockDriveLetter = ''; WindowsEspGuid = '';
       ProbeReport = ''; ProbeDrive = ''; EntryId = ''; ManualVerified = $false; Armed = $false; History = @(); UpdatedUtc = '' }
+    # A machine that is already set up must not be reported as untouched: the evidence on disk
+    # decides the stage, not the absence of this file. Nothing is written by reading.
+    if ($script:Derived) {
+      $fresh.Step = $script:Derived.Step
+      $fresh.Count = [int]$script:Derived.Count
+      $fresh.EntryId = [string]$script:Derived.EntryId
+      $fresh.ManualVerified = [bool]$script:Derived.ManualVerified
+      $fresh.Armed = [bool]$script:Derived.Armed
+      $fresh.UnlockDriveLetter = [string]$script:Derived.UnlockDriveLetter
+    }
+    return $fresh
   }
   $s = Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json
   foreach ($k in 'Cards', 'History') { if ($null -eq $s.$k) { $s | Add-Member -NotePropertyName $k -NotePropertyValue @() -Force } }
@@ -349,8 +403,13 @@ function Step-Build($State) {
 function Step-Stage($State) {
   $assets = if ($Assets) { $Assets } elseif ($State.Assets) { $State.Assets } else { Join-Path $repo 'assets' }
   if (-not (Test-Path -LiteralPath $assets)) {
-    Say 'The five firmware assets are not in this repository. Put them in one folder:' '五个固件资产不在仓库里。把它们放进一个目录：'
-    Say '  unlock\assets.json lists the exact names, sizes and SHA-256' '  unlock\assets.json 里有确切的名字、大小和 SHA-256'
+    Say 'The five firmware assets are not in this repository, and they are not downloadable from it.' '五个固件资产不在仓库里，也不能从这个仓库下载。'
+    Say 'They are generated once, on Linux or WSL, from the pinned upstream source:' '它们要在 Linux 或 WSL 上，从上游固定提交生成一次：'
+    Say '  git clone https://github.com/Zagitta/gpu-unlock.git' '  git clone https://github.com/Zagitta/gpu-unlock.git'
+    Say '  git -C gpu-unlock checkout --detach 0ebdb1c6308b6a2072be5bf04513472942541956' '  git -C gpu-unlock checkout --detach 0ebdb1c6308b6a2072be5bf04513472942541956'
+    Say '  cd gpu-unlock && make inputs firmware PYTHON=python3.14 INPUTS="$PWD/inputs" ASSETS="$PWD/assets"' '  cd gpu-unlock && make inputs firmware PYTHON=python3.14 INPUTS="$PWD/inputs" ASSETS="$PWD/assets"'
+    Say 'Then copy the five .bin files from that assets folder here, or pass -Assets <dir>.' '然后把该 assets 目录里的五个 .bin 复制过来，或用 -Assets <dir> 指定。'
+    Say 'unlock\assets.json holds the exact names, sizes and SHA-256; a mismatch is refused.' 'unlock\assets.json 里有确切的名字、大小和 SHA-256；不一致会被拒绝。'
     throw ("assets folder not found: " + $assets + " (pass -Assets <dir>)")
   }
   Invoke-Step (Join-Path $builtin 'Install.ps1') @('-Assets', $assets) 'stage images and assets onto the ESP'
@@ -524,6 +583,7 @@ function Invoke-SelfTest {
 # ---------------------------------------------------------------- main
 if ($SelfTest) { Invoke-SelfTest; return }
 
+$script:Derived = Get-DerivedStage
 $state = Read-State
 if ($Assets) { $state.Assets = $Assets }
 if ($UnlockDriveLetter) { $state.UnlockDriveLetter = $UnlockDriveLetter.TrimEnd(':') }
@@ -534,12 +594,14 @@ if ($Restore) {
   $state.Armed = $false
   Write-State $state
   Say 'Windows is first again. The unlock entry and its files are kept.' 'Windows 已回到第一位，解锁启动项和文件都保留。'
-  return
+  exit 0
 }
 
-if (-not $Next -and -not $All) { Show-Status $state; return }
+if (-not $Next -and -not $All) { Show-Status $state; exit 0 }
 
 $guard = 0
+$stepped = $false
+$keepGoing = $true
 while ($true) {
   $guard++
   if ($guard -gt 20) { throw 'step loop did not converge' }
@@ -547,13 +609,18 @@ while ($true) {
   $state = Read-State                 # re-read: a step may have written it
   if ($state.Step -eq 'verify' -and (Test-Path -LiteralPath $stateFile)) {
     $done = ($state.History | Where-Object { $_.Note -like 'verified *' })
-    if ($done) { Say 'already verified; nothing to do' '已经验证过，无需操作'; return }
+    if ($done) { Say 'already verified; nothing to do' '已经验证过，无需操作'; exit 0 }
   }
   Write-Host ''
   Write-Host ('  STEP {0}  {1}' -f (Step-Number $state.Step), $state.Step)
   $keepGoing = Invoke-OneStep $state
+  $stepped = $true
   if (-not $All) { break }
   if (-not $keepGoing) { break }
   if ($state.Step -eq $before) { break }
 }
 Show-Status (Read-State)
+# A step that reported failure must be visible to whatever is driving this, not just to a human
+# reading the screen: a wrapper that always exits 0 teaches an agent to ignore failures.
+if ($stepped -and -not $keepGoing) { exit 1 }
+exit 0
