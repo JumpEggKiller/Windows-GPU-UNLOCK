@@ -256,8 +256,15 @@ Need 'boot-application.py' $promote 'WINDOWS_BOOT_APPLICATION = 16'
 Need 'boot-application.py' $promote 'must not advertise ASLR or NX placement flags'
 Need 'boot-application.py' $promote 'a boot application needs a page aligned non-zero image base'
 Need 'boot-application.py' $promote 'only an EFI application may be promoted'
+# 0xC0000221 is the boot manager's checksum check: the promoted image must carry a
+# checksum computed after the last header edit, not the zero lld-link leaves behind.
+Need 'boot-application.py' $promote 'compute_checksum'
+Need 'boot-application.py' $promote 'Always (re)write the checksum'
+Need 'boot-application.py' $promote 'optional + 64, checksum'
 $verify = Read-Source 'unlock\verify_pe.py'
 Need 'verify_pe.py' $verify "'must be a Windows boot application (subsystem 16)'"
+Need 'verify_pe.py' $verify "'boot application must carry a PE checksum'"
+Need 'verify_pe.py' $verify "'boot application checksum does not match the image"
 Need 'verify_pe.py' $verify "'must be EFI application'"
 Need 'verify_pe.py' $verify "int(found[1], 16) - image_base == entry"
 $bootTests = Read-Source 'internal-boot\boot\run-tests.ps1'

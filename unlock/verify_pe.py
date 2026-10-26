@@ -31,6 +31,24 @@ def inspect(path, map_path, boot_application=False):
         require(subsystem == 16, 'must be a Windows boot application (subsystem 16)')
         require(image_base != 0 and image_base % 0x10000 == 0,
                 'boot application needs a page aligned non-zero image base')
+        # The boot manager verifies the PE checksum and reports 0xC0000221
+        # (STATUS_IMAGE_CHECKSUM_MISMATCH) when it is wrong, including when it is the
+        # zero lld-link leaves behind. Recompute it the way the loader does.
+        stored = u32(optional+64)
+        body = bytearray(data)
+        struct.pack_into('<I', body, optional+64, 0)
+        total = 0
+        for offset in range(0, len(body) - (len(body) % 2), 2):
+            total += struct.unpack_from('<H', body, offset)[0]
+            total = (total & 0xffff) + (total >> 16)
+        if len(body) % 2:
+            total += body[-1]
+            total = (total & 0xffff) + (total >> 16)
+        total = (total & 0xffff) + (total >> 16)
+        computed = (total + len(body)) & 0xffffffff
+        require(stored != 0, 'boot application must carry a PE checksum')
+        require(stored == computed,
+                'boot application checksum does not match the image (0x%08x != 0x%08x)' % (stored, computed))
     else:
         require(subsystem == 10, 'must be EFI application')
         require(image_base == 0, 'expected image base 0')
