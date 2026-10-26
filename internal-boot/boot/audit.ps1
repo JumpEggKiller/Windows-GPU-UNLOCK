@@ -150,6 +150,18 @@ Need 'app.c' (Read-Source 'unlock\app.c') 'the console must survive elsewhere'
 Need 'app.c' (Read-Source 'unlock\app.c') 'the console would not survive this card - refuse'
 Need 'targets.c' (Read-Source 'unlock\targets.c') 'two cards could each blank the console'
 
+# The display card's driver owns child controllers, so the release has to know
+# about them. The exception must stay behind the pin and must stay explicit.
+$ownership = Read-Source 'unlock\ownership.c'
+Need 'ownership.c' $ownership 'EFI_OPEN_PROTOCOL_BY_CHILD_CONTROLLER'
+Need 'ownership.c' $ownership '&& GU_RELEASE_DISPLAY_PIN'
+Need 'ownership.c' $ownership 'release: child %#llx accepted by the display pin at record %u'
+Need 'ownership.c' $ownership 'release refused: unusable child open at record %u'
+Need 'ownership.c' $ownership '#define GU_RELEASE_DISPLAY_PIN GU_TARGET_DISPLAY_MAY_SIT'
+Need 'ownership.c' $ownership 'if(A->children_count!=B->children_count)return FALSE;'
+Need 'app.c' (Read-Source 'unlock\app.c') 'child release: status=%#llx child=%#llx'
+Need 'app.c' (Read-Source 'unlock\app.c') 'driver release retried after children: status=%#llx'
+
 # --- install scripts ----------------------------------------------------------
 
 $install = Read-Source 'internal-boot\Install.ps1'

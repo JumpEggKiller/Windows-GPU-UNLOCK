@@ -517,6 +517,19 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE Image,EFI_SYSTEM_TABLE *St) {
     EFI_PCI_IO_PROTOCOL *prior=Gu.pci;
     Stage="driver-release";release_attempted=TRUE;Gu.armed=TRUE;Gu.pci=NULL;
     EFI_STATUS released=Gu.bs->DisconnectController(Gu.handle,current.agent,NULL);
+    if(EFI_ERROR(released) && current.children_count) {
+      /* The console card's graphics driver owns child controllers. Its Stop may
+         refuse while they are live, so break them first and stop it again. The
+         console is expected to go quiet here; the pin already required another
+         physical GOP and every step below is recorded to the file log. */
+      for(UINTN k=0;k<current.children_count;k++) {
+        EFI_STATUS child=Gu.bs->DisconnectController(current.children[k],NULL,NULL);
+        GuLog("child release: status=%#llx child=%#llx\n",(unsigned long long)child,
+          (unsigned long long)(UINTN)current.children[k]);
+      }
+      released=Gu.bs->DisconnectController(Gu.handle,current.agent,NULL);
+      GuLog("driver release retried after children: status=%#llx\n",(unsigned long long)released);
+    }
     EFI_TPL refresh_tpl=Gu.bs->RaiseTPL(TPL_NOTIFY);
     EFI_STATUS refreshed=GuRefreshTargetPci();
     Gu.bs->RestoreTPL(refresh_tpl);

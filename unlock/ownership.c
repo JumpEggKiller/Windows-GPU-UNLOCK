@@ -1,6 +1,14 @@
 #include "ownership.h"
 #include "runtime.h"
 #include <Protocol/LoadedImage.h>
+#if defined(GU_MULTI_TARGET)
+#include "targets.h"
+/* Only the card the pin names may carry children below the target; every other
+   card keeps the original refusal. */
+#define GU_RELEASE_DISPLAY_PIN GU_TARGET_DISPLAY_MAY_SIT
+#else
+#define GU_RELEASE_DISPLAY_PIN 0
+#endif
 static EFI_GUID PciGuid=EFI_PCI_IO_PROTOCOL_GUID,
   BindingGuid=EFI_DRIVER_BINDING_PROTOCOL_GUID,LoadedGuid=EFI_LOADED_IMAGE_PROTOCOL_GUID;
 typedef struct {EFI_GUID protocol;EFI_OPEN_PROTOCOL_INFORMATION_ENTRY entry;} OWNER_RECORD;
@@ -73,7 +81,25 @@ EFI_STATUS GuFindReleaseOwner(EFI_SYSTEM_TABLE *Table,GU_RELEASE_OWNER *Owner,BO
     /* This release handles a single device driver only. DisconnectController
        gathers children across every protocol, and physical console children
        need not equal the System Table's virtual console handles. Refuse all
-       child relationships instead of assuming a route alone proves isolation. */
+       child relationships instead of assuming a route alone proves isolation.
+       The one exception is the card whose pin lets it sit on the console path:
+       its graphics driver owns children there by construction, DisplayCheck has
+       already demanded another physical GOP elsewhere, and CardUnlock releases
+       those children explicitly before it stops the driver. */
+    if(e->Attributes==EFI_OPEN_PROTOCOL_BY_CHILD_CONTROLLER && GU_RELEASE_DISPLAY_PIN) {
+      if(!e->ControllerHandle || e->AgentHandle==Gu.image || e->AgentHandle==Gu.handle ||
+         ConsoleHandle(Table,e->ControllerHandle) || e->OpenCount!=1 ||
+         Owner->children_count>=GU_RELEASE_MAX_CHILDREN) {
+        if(Log)GuLog("release refused: unusable child open at record %u\n",(unsigned)i);
+        return EFI_ACCESS_DENIED;
+      }
+      BOOLEAN known=FALSE;
+      for(UINTN k=0;k<Owner->children_count;k++)if(Owner->children[k]==e->ControllerHandle)known=TRUE;
+      if(!known)Owner->children[Owner->children_count++]=e->ControllerHandle;
+      if(Log)GuLog("release: child %#llx accepted by the display pin at record %u\n",
+        (unsigned long long)(UINTN)e->ControllerHandle,(unsigned)i);
+      continue;
+    }
     if(e->Attributes!=EFI_OPEN_PROTOCOL_BY_DRIVER || e->AgentHandle!=Owner->agent ||
        e->ControllerHandle!=Gu.handle || e->OpenCount!=1) {
       if(Log)GuLog("release refused: active child, different owner or unsupported open at record %u\n",(unsigned)i);
@@ -86,10 +112,11 @@ EFI_STATUS GuFindReleaseOwner(EFI_SYSTEM_TABLE *Table,GU_RELEASE_OWNER *Owner,BO
     !binding->ImageHandle || binding->ImageHandle==Gu.image)return EFI_UNSUPPORTED;
   status=Gu.bs->HandleProtocol(binding->ImageHandle,&LoadedGuid,(VOID **)&image);
   if(EFI_ERROR(status) || !image)return EFI_UNSUPPORTED;
-  if(Log)GuLog("release candidate: agent=%#llx image=%#llx source=%#llx base=%#llx bytes=%llu version=%#x code_type=%u children=0\n",
+  if(Log)GuLog("release candidate: agent=%#llx image=%#llx source=%#llx base=%#llx bytes=%llu version=%#x code_type=%u children=%zu\n",
     (unsigned long long)(UINTN)Owner->agent,(unsigned long long)(UINTN)binding->ImageHandle,
     (unsigned long long)(UINTN)image->DeviceHandle,(unsigned long long)(UINTN)image->ImageBase,
-    (unsigned long long)image->ImageSize,binding->Version,(unsigned)image->ImageCodeType);
+    (unsigned long long)image->ImageSize,binding->Version,(unsigned)image->ImageCodeType,
+    (size_t)Owner->children_count);
   if(!image->ImageBase || !image->ImageSize || image->ImageSize>64U*1024U*1024U || image->ImageCodeType!=EfiBootServicesCode)return EFI_UNSUPPORTED;
   Owner->image=binding->ImageHandle;Owner->base=image->ImageBase;Owner->size=image->ImageSize;
   Owner->version=binding->Version;Owner->stop=binding->Stop;return EFI_SUCCESS;
@@ -97,6 +124,10 @@ EFI_STATUS GuFindReleaseOwner(EFI_SYSTEM_TABLE *Table,GU_RELEASE_OWNER *Owner,BO
 BOOLEAN GuSameReleaseOwner(const GU_RELEASE_OWNER *A,const GU_RELEASE_OWNER *B) {
   if(A->agent!=B->agent || A->image!=B->image || A->base!=B->base || A->size!=B->size ||
     A->version!=B->version || A->stop!=B->stop)return FALSE;
+  /* A child that appeared or vanished between the U press and the release means
+     the device changed underneath us, which is exactly what this re-check is for. */
+  if(A->children_count!=B->children_count)return FALSE;
+  for(UINTN i=0;i<A->children_count;i++)if(A->children[i]!=B->children[i])return FALSE;
   return TRUE;
 }
 EFI_STATUS GuRefreshTargetPci(VOID) {
