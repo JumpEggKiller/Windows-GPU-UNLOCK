@@ -26,3 +26,4 @@ __pycache__/
 .env*
 *.key
 *.pem
+internal-boot/install/state.json

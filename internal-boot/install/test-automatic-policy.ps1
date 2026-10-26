@@ -269,6 +269,45 @@ Check 'an entry field is read back without its identifier line' {
   if($null -ne (Get-BootEntryBlock $copied '{deadbeef-0000-1111-2222-333344445555}')){Fail 'a missing entry was found'}
 }
 
+# --- which enumeration a caller may attribute a new entry from -----------------
+# A bare "bcdedit /enum" prints {bootmgr} and {current} instead of the identifiers they
+# stand for, and it does not list a freshly copied boot-manager entry at all. A before /
+# after diff over that output is empty on every real store, so registration could never be
+# attributed. This is the regression that only the live store exposed.
+Check 'a plain enumeration yields no identifiers to attribute from' {
+  # What a real store does: "bcdedit /enum" prints {bootmgr} and {current} and never lists
+  # the entry that /copy just created, so the before and after text are identical and a
+  # correct registration cannot be attributed. This is exactly what the live store did.
+  $plain=@(
+    'Windows Boot Manager'
+    '--------------------'
+    'identifier              {bootmgr}'
+    ('device                  ' + $bootmgrDevice)
+    ('path                    ' + $bootmgrPath)
+    'default                 {current}'
+    'displayorder            {current}'
+    'timeout                 30'
+    ''
+    'Windows Boot Loader'
+    '-------------------'
+    'identifier              {current}'
+    'device                  partition=C:'
+    'path                    \Windows\system32\winload.efi'
+  ) -join "`r`n"
+  Expect { Resolve-NewBootCopy -BeforeText $plain -AfterText $plain -Name $name } 'Cannot attribute one new boot copy'
+}
+Check 'a verbose enumeration breaks attribution because the boot manager loses its alias' {
+  # "bcdedit /enum all /v" is what the backup wants, but it renders the boot manager as
+  # {9dea862c-...}, so the default -SourceIdentifier '{bootmgr}' cannot be found and a
+  # perfectly good copy looks unattributable. The installer therefore compares /enum all
+  # (non-verbose), which keeps the aliases and still lists every copied entry by GUID.
+  $before=@($windowsMenuVerbose) -join "`r`n"
+  $after=$before + "`r`n" + (New-Entry $newId $name $bootmgrDevice $bootmgrPath)
+  $ids=@(Get-BootIdentifiers $before)
+  if($ids -notcontains '{9dea862c-5cdd-4e70-acc1-f32b344d4795}'){Fail 'the verbose read lost the boot manager identifier'}
+  Expect { [void](Resolve-NewBootCopy -BeforeText $before -AfterText $after -Name $name) } 'is missing from the enumeration'
+}
+
 Write-Host ''
 if($script:failed -gt 0) {
   Write-Host ("FAILED {0} of {1} automatic-policy checks" -f $script:failed,($script:passed+$script:failed))

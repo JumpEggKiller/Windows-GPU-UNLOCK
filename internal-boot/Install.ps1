@@ -241,7 +241,7 @@ function New-BootBackup {
   $target=Join-Path $programData $stamp
   New-Item -ItemType Directory -Path $target -Force|Out-Null
   [void](Invoke-Bcd @('/export',(Join-Path $target 'bcd-export')))
-  (Invoke-Bcd @('/enum'))|Set-Content -LiteralPath (Join-Path $target 'enum-before.txt') -Encoding UTF8
+  (Invoke-Bcd @('/enum','all','/v'))|Set-Content -LiteralPath (Join-Path $target 'enum-before.txt') -Encoding UTF8
   # /v so the backup holds raw identifiers rather than the {current}/{default} aliases: the
   # default entry recorded here is what recovery has to put back.
   (Invoke-Bcd @('/enum','{bootmgr}','/v'))|Set-Content -LiteralPath (Join-Path $target 'bootmgr-before.txt') -Encoding UTF8
@@ -265,7 +265,11 @@ function Assert-ManualEntryUsable {
 function Invoke-RegisterManual {
   param($Targets,[object[]]$Files)
   if(Test-Path -LiteralPath $stateFile){Fail 'An install state already exists; use its recovery procedure (-RestoreWindowsFirst) before registering again'}
-  $before=Invoke-Bcd @('/enum')
+  # A bare "bcdedit /enum" prints aliases ({bootmgr}, {current}) and does not list the entry
+  # that is about to be copied, so a before/after diff over it is always empty and a correct
+  # registration can never be attributed. Only "enum all /v" prints the raw identifier of
+  # every entry, including a fresh copy. Found on the live store, not in the rehearsal.
+  $before=Invoke-Bcd @('/enum','all')
   # Two orders matter and they are different things. The firmware order decides whether
   # {bootmgr} runs at all; the Windows Boot Manager's own order decides what it starts.
   # The new entry lives in the second one, so both are read, checked and backed up.
@@ -288,9 +292,23 @@ function Invoke-RegisterManual {
   $defaultBefore=Get-BootDefault (Invoke-Bcd @('/enum','{bootmgr}','/v'))
   $backup=New-BootBackup
   $description='Windows GPU UNLOCK Manual'
-  [void](Invoke-Bcd @('/copy','{bootmgr}','/d',$description))
-  $afterCopy=Invoke-Bcd @('/enum')
-  $entry=Resolve-NewBootCopy -BeforeText $before -AfterText $afterCopy -Name $description
+  $copyText=Invoke-Bcd @('/copy','{bootmgr}','/d',$description)
+  $afterCopy=Invoke-Bcd @('/enum','all')
+  try {
+    $entry=Resolve-NewBootCopy -BeforeText $before -AfterText $afterCopy -Name $description
+  }
+  catch {
+    # /copy already created an entry, so a failed attribution must not leave a dangling one
+    # behind. The copy is in no displayorder yet, so deleting it restores the pre-attempt store.
+    $orphan=$null
+    if($copyText -match 'successfully copied to\s+(\{[0-9a-fA-F-]{36}\})'){$orphan=$Matches[1].ToLowerInvariant()}
+    if($null -eq $orphan){Write-Host 'No copy identifier in the bcdedit output; inspect the backup before retrying.'}
+    else {
+      try { [void](Invoke-Bcd @('/delete',$orphan,'/f')); Write-Host ("Removed the unattributable copy {0}" -f $orphan) }
+      catch { Write-Host ("Could not remove the unattributable copy {0}: {1}" -f $orphan,$_.Exception.Message) }
+    }
+    throw
+  }
 
   $steps=@(
     [pscustomobject]@{Name=('entry device -> {0}:' -f $Targets.Letter);Run={[void](Invoke-Bcd @('/set',$entry,'device',('partition=' + $Targets.Letter + ':')))}}
@@ -298,7 +316,7 @@ function Invoke-RegisterManual {
     [pscustomobject]@{Name='displayorder append';Run={Set-BootOrder (@($orderBefore) + $entry)}}
   )
   $verify={
-    $text=Invoke-Bcd @('/enum')
+    $text=Invoke-Bcd @('/enum','all')
     Assert-ManualEntryUsable -Text $text -Identifier $entry -DriveLetter $Targets.Letter
     $order=Get-BootOrder (Invoke-Bcd @('/enum','{bootmgr}'))
     if($order[0] -ne $orderBefore[0]){Fail ("Verification failed: the first menu entry changed from {0} to {1}" -f $orderBefore[0],$order[0])}
@@ -322,7 +340,7 @@ function Invoke-RegisterManual {
     EntryId=$entry
     EntryDescription=$description
     BackupRoot=$backup
-    BootOrderBefore=$orderBefore
+    BootOrderBefore=@($orderBefore | ForEach-Object { [string]$_ })
     BootTimeoutBefore=$timeoutBefore
     BootDefaultBefore=$defaultBefore
     HiberbootBefore=$hiberBefore
@@ -348,7 +366,7 @@ function Invoke-EnableAutomatic {
   if($entry -notmatch '^\{[0-9a-f-]{36}\}$'){Fail 'The saved entry identifier is malformed'}
   if($state.Mode -ne 'registered-manual'){Fail ("Install state is {0}; promotion has already happened or recovery is required" -f $state.Mode)}
 
-  $text=Invoke-Bcd @('/enum')
+  $text=Invoke-Bcd @('/enum','all')
   if($null -eq (Get-BootEntryBlock $text $entry)){Fail 'The registered entry no longer exists'}
   Assert-ManualEntryUsable -Text $text -Identifier $entry -DriveLetter $Targets.Letter
   $orderBefore=Get-BootOrder (Invoke-Bcd @('/enum','{bootmgr}'))
@@ -373,7 +391,7 @@ function Invoke-EnableAutomatic {
   [ordered]@{
     CreatedUtc=[DateTime]::UtcNow.ToString('o')
     EntryId=$entry
-    BootOrderBefore=$orderBefore
+    BootOrderBefore=@($orderBefore | ForEach-Object { [string]$_ })
     BootTimeoutBefore=$state.BootTimeoutBefore
     BootTimeoutAutomatic=$automaticTimeout
     BootDefaultBefore=$defaultBefore
@@ -394,7 +412,7 @@ function Invoke-EnableAutomatic {
     [pscustomobject]@{Name=('boot menu timeout -> {0}s' -f $automaticTimeout);Run={Set-BootTimeout -Seconds $automaticTimeout}}
   )
   $verify={
-    $text=Invoke-Bcd @('/enum')
+    $text=Invoke-Bcd @('/enum','all')
     $path=Get-BootEntryField $text $entry 'path'
     if($path -ne '\EFI\WindowsGPUUnlock\AUTO.EFI'){Fail ("Verification failed: entry path is '{0}'" -f $path)}
     $description=Get-BootEntryField $text $entry 'description'
@@ -485,7 +503,7 @@ function Invoke-RestoreWindowsFirst {
     [pscustomobject]@{Name='re-point the saved entry at the manual handoff'
       Run={
         if($entry -match '^\{[0-9a-f-]{36}\}$'){
-          $text=Invoke-Bcd @('/enum')
+          $text=Invoke-Bcd @('/enum','all')
           if($null -ne (Get-BootEntryBlock $text $entry)){
             [void](Invoke-Bcd @('/set',$entry,'path','\EFI\WindowsGPUUnlock\MANUAL.EFI'))
             [void](Invoke-Bcd @('/set',$entry,'description','Windows GPU UNLOCK Manual'))
