@@ -202,6 +202,25 @@ Gate D" says it is.
 If anything fails: the wrapper stops and prints the reason; power-cycle, choose the first
 menu entry (Windows), then run `.\Install.ps1 -RestoreWindowsFirst`.
 
+Read the failure screen before assuming a hardware problem. The first Gate C attempt got as far
+as this, which is a **software** fact and not progress to dismiss:
+
+```
+文件: \EFI\Windows GPUUnlock\MANUAL.EFI
+状态: 0xc000007b
+```
+
+That screen is bootmgfw's own and it means the boot manager read our entry, tried to start the
+file and rejected the image format before executing a single instruction — no `FULLnn.TXT` was
+written, so nothing was unlocked and no GPU state changed. It cost nothing and it proved the
+route (entry → our file on `S:`) works. Since then the wrappers are linked as Windows boot
+applications (subsystem 16, image base `0x140000000`, no placement flags, see
+`boot\boot-application.py`), matching `memtest.efi`, which this machine's boot manager does start
+from a BCD entry. If a *new* attempt shows `0xc000007b` again, stop and re-check the image shape
+with `python ..\..\unlock\verify_pe.py build\manual\HANDOFF.EFI build\manual\HANDOFF.map
+--boot-application --output build\test\pe.json` rather than touching the firmware order. If it
+shows anything else, the file was loaded and the message is ours: read `S:\RTX3090-UNLOCK\`.
+
 ## Step 4 — Gate D/E: arm automatic boot, then two cold boots
 
 ```powershell

@@ -234,6 +234,28 @@ Forbid 'test-automatic-policy.ps1' $policyTests 'Set-BootOrder $'
 Forbid 'test-automatic-policy.ps1' $policyTests "Invoke-Bcd @('/set'"
 Need 'test-automatic-policy.ps1' $policyTests 'Assert-OrderKeepsWindows'
 
+# --- image shape the Windows boot manager accepts ------------------------------
+# bootmgr refused a subsystem 10 EFI application with 0xC000007B, so the wrapper is
+# linked at a fixed high base with no placement flags and promoted to a boot
+# application after linking. Both halves of that must stay in the build.
+$bootBuild = Read-Source 'internal-boot\boot\build.ps1'
+Need 'build.ps1' $bootBuild '/base:0x140000000'
+Need 'build.ps1' $bootBuild '/dynamicbase:no /nxcompat:no'
+Need 'build.ps1' $bootBuild "'boot-application.py'"
+Need 'build.ps1' $bootBuild '--boot-application'
+$promote = Read-Source 'internal-boot\boot\boot-application.py'
+Need 'boot-application.py' $promote 'WINDOWS_BOOT_APPLICATION = 16'
+Need 'boot-application.py' $promote 'must not advertise ASLR or NX placement flags'
+Need 'boot-application.py' $promote 'a boot application needs a page aligned non-zero image base'
+Need 'boot-application.py' $promote 'only an EFI application may be promoted'
+$verify = Read-Source 'unlock\verify_pe.py'
+Need 'verify_pe.py' $verify "'must be a Windows boot application (subsystem 16)'"
+Need 'verify_pe.py' $verify "'must be EFI application'"
+Need 'verify_pe.py' $verify "int(found[1], 16) - image_base == entry"
+$bootTests = Read-Source 'internal-boot\boot\run-tests.ps1'
+Need 'run-tests.ps1' $bootTests 'expected the verifier to refuse'
+Need 'run-tests.ps1' $bootTests '-BootApplication'
+
 # --- report -------------------------------------------------------------------
 
 if ($failures.Count -gt 0) {

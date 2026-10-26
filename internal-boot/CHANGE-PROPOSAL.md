@@ -16,6 +16,18 @@ Automatic mode now also sets `default {entry}` and happens; the readback include
 and "armed" is defined as four fields at once (§2). Nothing about the live boot configuration
 has been changed by this revision.
 
+**Revision note (image shape, after the first Gate C attempt).** Moment 1 has now been applied
+once: entry `{93dc5615-d0f2-11f1-b41f-18c04d0c6177}` is registered, Windows is still first and
+still the default. The first cold boot reached that entry and the boot manager itself refused the
+file with `状态: 0xc000007b` on `\EFI\Windows GPUUnlock\MANUAL.EFI`, before any of our code ran
+(no log file was created at all). Cause: the wrapper was linked as a plain EFI application
+(subsystem 10, image base 0, ASLR/NX placement flags). The one image this boot manager does start
+through a BCD entry on this machine, `memtest.efi`, is `IMAGE_SUBSYSTEM_WINDOWS_BOOT_APPLICATION`
+(16) at image base `0x140000000` with no placement flags. The wrappers are now linked and patched
+to exactly that shape (`boot\boot-application.py`), while the unlock children stay subsystem 10
+because firmware and our own `LoadImage` start them. Re-staged and verified `9 of 9`; the four
+image hashes in §1 are superseded by the values below.
+
 ## 1. What exists right now (captured, read only)
 
 ```
@@ -56,8 +68,8 @@ Staged images (all `HardwareTested=false`, all `verify_pe.py` clean):
 |---|---|---|
 | `UNLOCK.EFI` manual child | 73728 | `76bf83a2dce4df71f3d5b87c77941342e480fceab02b367ca47d57a73560cb46` |
 | `UNLOCK-AUTO.EFI` automatic child | 73728 | `ccc21e4fd46b919c43097cf8fc5fdbe5df9848e1f45f842aa4c5eb2bd8bd9e0c` |
-| `MANUAL.EFI` manual wrapper | 9728 | `0c98b4a5ce4c424a1c73dd731c9b591f3d95570a000ddabb9c389cded0a7a759` |
-| `AUTO.EFI` automatic wrapper | 10240 | `74a7911c21fd8871691216cb146a1bec44b3ad090888a2351d49bbd9056a6791` |
+| `MANUAL.EFI` manual wrapper | 10752 | `ab677646e51b913b097646516bfa447bde21026e4b8e793ae4c0edb9cd173564` |
+| `AUTO.EFI` automatic wrapper | 10752 | `2123fe12f6285a94f61ebc7c54985de6410d1aff9ac23c54bee1f06961b81e1a` |
 
 ## 2. The change, in two separate moments
 

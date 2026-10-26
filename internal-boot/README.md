@@ -47,6 +47,26 @@ later boot. The wrapper starts Windows only if the record parses, the status is 
 `eligible` equals the compiled-in expected card count, and `unlocked == retained ==
 clean == eligible`. A rig that lost a card and unlocked only what it found is refused.
 
+### The wrapper is a Windows *boot application*, not an EFI application
+
+The arrow at the top of that diagram is drawn by the Windows boot manager, not by firmware:
+firmware starts `bootmgfw.efi`, and bootmgfw reads the BCD entry and starts the wrapper. Its
+PE loader is stricter than the firmware's. A plain EFI application (subsystem 10, image base
+0, ASLR/NX placement flags) is rejected with `0xC000007B` before a single instruction runs,
+which is what the first Gate C attempt produced on `\EFI\Windows GPUUnlock\MANUAL.EFI`.
+
+The reference the build now copies is `memtest.efi`, the one image on this machine that the
+boot manager does start from a BCD entry: `IMAGE_SUBSYSTEM_WINDOWS_BOOT_APPLICATION` (16),
+image base `0x140000000`, `DllCharacteristics` zero. `boot\build.ps1` links the wrapper at
+that base with no placement flags and `boot\boot-application.py` writes the subsystem value,
+because lld-link has no name for 16; `unlock\verify_pe.py --boot-application` then enforces
+the shape on the built file, and `boot\run-tests.ps1` proves both directions (a wrapper
+passes, the subsystem 10 child fails).
+
+Only the wrappers change. The child stays a normal EFI application because firmware and the
+wrapper's own `LoadImage` start it, and firmware ignores the subsystem value — so the same
+`MANUAL.EFI` still loads if it ever has to be started from a USB firmware entry instead.
+
 ## Prerequisites
 
 - a **separate** FAT32 ESP of at least 1 GiB, not the Windows ESP, mountable as a letter
@@ -193,17 +213,21 @@ effort and the file log as authoritative.
 ```
 
 Runs the wrapper's host tests (device-path policy, handoff flow fault injection,
-end-of-batch record policy), the installer's boot-policy tests against recorded
-`bcdedit` output (including the "first in the menu is not armed" regression), the installer
-plan test, the boot-store rehearsal, the staged-set check, the source audit, and the unlock
-child's own suite.
+end-of-batch record policy), the PE shape checks on the images that are actually staged
+(a wrapper must be a boot application, the child must not be), the installer's boot-policy
+tests against recorded `bcdedit` output (including the "first in the menu is not armed"
+regression), the installer plan test, the boot-store rehearsal, the staged-set check, the
+source audit, and the unlock child's own suite.
 
 ## Status
 
 Software side complete: both layers build reproducibly, every host suite passes, the
 installed set was pinned to the real dedicated ESP (`S:`, `{7c5be0d5-…}`) and staged onto it,
-and `-Check` reports READY with no blocked prerequisite. **Hardware-unverified**: no build
-from this tree has been booted on the rig yet and the automatic path has never been started
-by real firmware. Physical acceptance (manual selection, then one cold boot, then a second
-cold boot) is the remaining step, and it needs the maintenance window because registering
-the boot entry writes the live boot store.
+and `-Check` reports READY with no blocked prerequisite.
+
+One real boot has been attempted. It proved the route — the Windows boot manager resolved the
+entry to `S:\EFI\WindowsGPUUnlock\MANUAL.EFI` — and it failed there with `0xC000007B`, before
+any of this code ran, because the wrapper was still a plain EFI application. The wrappers are
+now linked as boot applications (see above) and re-staged; that shape has **not** been
+confirmed on real firmware yet. Physical acceptance (manual selection, then one cold boot,
+then a second cold boot) remains the last step.

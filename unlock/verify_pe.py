@@ -6,7 +6,7 @@ import re
 import struct
 from pathlib import Path
 
-def inspect(path, map_path):
+def inspect(path, map_path, boot_application=False):
     data = Path(path).read_bytes()
     def require(condition, message):
         if not condition:
@@ -19,11 +19,24 @@ def inspect(path, map_path):
     require(u16(pe+4) == 0x8664, 'must be AMD64')
     optional = pe+24
     require(u16(optional) == 0x20b, 'must be PE32+')
-    require(u16(optional+68) == 10, 'must be EFI application')
+    subsystem = u16(optional+68)
+    image_base = struct.unpack_from('<Q', data, optional+24)[0]
+    characteristics = u16(optional+70)
+    if boot_application:
+        # An image the Windows boot manager is asked to start from a BCD entry is a
+        # boot application (IMAGE_SUBSYSTEM_WINDOWS_BOOT_APPLICATION, 16), mapped at
+        # a real preferred base, exactly like the memtest.efi that ships next to
+        # bootmgfw.efi. Firmware also loads subsystem 16 happily; it ignores the
+        # value, so one image can satisfy both loaders.
+        require(subsystem == 16, 'must be a Windows boot application (subsystem 16)')
+        require(image_base != 0 and image_base % 0x10000 == 0,
+                'boot application needs a page aligned non-zero image base')
+    else:
+        require(subsystem == 10, 'must be EFI application')
+        require(image_base == 0, 'expected image base 0')
+        require(characteristics & 0x140 == 0x140, 'ASLR and NX flags required')
     entry = u32(optional+16)
     require(entry != 0, 'entry point missing')
-    require(struct.unpack_from('<Q', data, optional+24)[0] == 0, 'expected image base 0')
-    require(u16(optional+70) & 0x140 == 0x140, 'ASLR and NX flags required')
     require(u32(optional+108) >= 16, 'data directory missing')
     for index, name in [(1, 'imports'), (12, 'IAT'), (13, 'delay imports')]:
         require(data[optional+112+8*index:optional+120+8*index] == b'\0'*8, name)
@@ -37,14 +50,21 @@ def inspect(path, map_path):
     require(executable_entry, 'entry must be in executable section')
     text = Path(map_path).read_text()
     found = re.search(r'^\s*[0-9A-Fa-f]+:[0-9A-Fa-f]+\s+efi_main\s+([0-9A-Fa-f]+)', text, re.M)
-    require(found and int(found[1], 16) == entry, 'entry does not match efi_main map symbol')
+    # The map lists absolute virtual addresses, so subtract the preferred base to get
+    # the entry RVA the header carries. With image base 0 this is the old comparison.
+    require(found and int(found[1], 16) - image_base == entry, 'entry does not match efi_main map symbol')
     return dict(path=Path(path).name, bytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
-                machine='AMD64', subsystem=10, entry='efi_main', entry_rva=entry,
-                imports=0, iat=0, delay_imports=0, nx=True, dynamic_base=True)
+                machine='AMD64', subsystem=subsystem, entry='efi_main', entry_rva=entry,
+                image_base=image_base, dll_characteristics=characteristics,
+                imports=0, iat=0, delay_imports=0,
+                nx=bool(characteristics & 0x100), dynamic_base=bool(characteristics & 0x40))
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
     p.add_argument('efi'); p.add_argument('map'); p.add_argument('--output', required=True)
-    a = p.parse_args(); result = inspect(a.efi, a.map)
+    p.add_argument('--boot-application', action='store_true',
+                   help='the image is started by the Windows boot manager, so it must be '
+                        'a subsystem 16 boot application with a non-zero image base')
+    a = p.parse_args(); result = inspect(a.efi, a.map, a.boot_application)
     Path(a.output).write_text(json.dumps(result, indent=2)+'\n')
     print(json.dumps(result))
