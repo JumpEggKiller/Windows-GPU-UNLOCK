@@ -152,6 +152,7 @@ static EFI_STATUS FilePath(EFI_HANDLE Device,const CHAR16 *Name,EFI_DEVICE_PATH_
 }
 
 static EFI_STATUS OpenLog(VOID) {
+  if(Log)return EFI_SUCCESS;
   EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *fs=NULL;
   EFI_STATUS status=EFI_UNSUPPORTED;
   if(OwnImage)status=Table->BootServices->HandleProtocol(OwnImage->DeviceHandle,&FsGuid,(VOID **)&fs);
@@ -378,8 +379,15 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE Image,EFI_SYSTEM_TABLE *St) {
   if(EFI_ERROR(St->BootServices->HandleProtocol(Image,&LoadedGuid,(VOID **)&loaded)) || !loaded)
     return EFI_INVALID_PARAMETER;
   Self=Image;OwnImage=loaded;
+  /* Breadcrumb before any other work, and before any console output: if the firmware
+     resets the machine somewhere in this handoff, the log is the only evidence that our
+     image was started at all. OpenLog is idempotent, so Prepare re-uses this handle. */
+  EFI_STATUS logStatus=OpenLog();
+  if(EFI_ERROR(logStatus))CloseLog();
+  else RecordEvent("entry",EFI_SUCCESS);
   GU_HANDOFF_OPS ops={NULL,Prepare,Select,RecordOp,Unlock,Windows};
   Say("Windows GPU UNLOCK internal " GU_MODE_NAME " handoff.\n");
+  if(EFI_ERROR(logStatus))Say("No log: this attempt cannot be recorded.\n");
 #if defined(GU_CONFIG_PLACEHOLDER) && GU_CONFIG_PLACEHOLDER
   Say("CONFIG PLACEHOLDER: this build was not configured against a real ESP.\n");
 #endif
